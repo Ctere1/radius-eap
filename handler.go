@@ -59,7 +59,12 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 		}
 	}
 
-	rfc2865.State_SetString(rres, p.state)
+	err = rfc2865.State_SetString(rres, p.state)
+	if err != nil {
+		log.WithError(err).Warning("failed to set state")
+		sendErrorResponse(w, r)
+		return
+	}
 	eapEncoded, err := rp.Encode()
 	if err != nil {
 		log.WithError(err).Warning("failed to encode response")
@@ -67,7 +72,12 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 		return
 	}
 	log.WithField("length", len(eapEncoded)).WithField("type", fmt.Sprintf("%T", rp.eap.Payload)).Debug("Root-EAP: encapsulated challenge")
-	rfc2869.EAPMessage_Set(rres, eapEncoded)
+	err = rfc2869.EAPMessage_Set(rres, eapEncoded)
+	if err != nil {
+		log.WithError(err).Warning("failed to set EAP message")
+		sendErrorResponse(w, r)
+		return
+	}
 	err = p.setMessageAuthenticator(rres)
 	if err != nil {
 		log.WithError(err).Warning("failed to send message authenticator")
@@ -140,7 +150,10 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 	}
 	var payload any
 	if reflect.TypeOf(pp.(*eap.Payload).Payload) == reflect.TypeOf(np) {
-		np.Decode(pp.(*eap.Payload).RawPayload)
+		err := np.Decode(pp.(*eap.Payload).RawPayload)
+		if err != nil {
+			ctx.log.WithError(err).Warning("failed to decode payload")
+		}
 	}
 	payload = np.Handle(ctx)
 	if payload != nil {

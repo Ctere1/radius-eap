@@ -165,8 +165,14 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	if len(microsoft.MSMPPESendKey_Get(r, q)) > 0 {
 		microsoft.MSMPPESendKey_Del(r)
 	}
-	microsoft.MSMPPERecvKey_Set(r, p.st.MPPEKey[:32])
-	microsoft.MSMPPESendKey_Set(r, p.st.MPPEKey[64:64+32])
+	err := microsoft.MSMPPERecvKey_Set(r, p.st.MPPEKey[:32])
+	if err != nil {
+		return err
+	}
+	err = microsoft.MSMPPESendKey_Set(r, p.st.MPPEKey[64:64+32])
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -190,7 +196,7 @@ func (p *Payload) tlsInit(ctx protocol.Context) {
 		return nil, nil
 	}
 	p.st.TLS = tls.Server(p.st.Conn, cfg)
-	p.st.TLS.SetDeadline(time.Now().Add(staleConnectionTimeout * time.Second))
+	_ = p.st.TLS.SetDeadline(time.Now().Add(staleConnectionTimeout * time.Second))
 	go func() {
 		err := p.st.TLS.HandshakeContext(p.st.Context)
 		if err != nil {

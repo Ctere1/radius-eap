@@ -174,10 +174,16 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	}
 	log.Debug("MSCHAPv2: Radius modifier")
 	if len(microsoft.MSMPPERecvKey_Get(r, q)) < 1 {
-		microsoft.MSMPPERecvKey_Set(r, p.st.AuthResponse.RecvKey)
+		err := microsoft.MSMPPERecvKey_Set(r, p.st.AuthResponse.RecvKey)
+		if err != nil {
+			return err
+		}
 	}
 	if len(microsoft.MSMPPESendKey_Get(r, q)) < 1 {
-		microsoft.MSMPPESendKey_Set(r, p.st.AuthResponse.SendKey)
+		err := microsoft.MSMPPESendKey_Set(r, p.st.AuthResponse.SendKey)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
