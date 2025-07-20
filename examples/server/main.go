@@ -69,13 +69,13 @@ func (s *Server) SetEAPState(key string, state *protocol.State) {
 }
 
 func (s *Server) GetEAPSettings() protocol.Settings {
-	protocols := []protocol.ProtocolConstructor{
-		identity.Protocol,
-		legacy_nak.Protocol,
-	}
-
 	return protocol.Settings{
-		Protocols:        append(protocols, tls.Protocol, peap.Protocol),
+		Protocols: []protocol.ProtocolConstructor{
+			identity.Protocol,
+			legacy_nak.Protocol,
+			tls.Protocol,
+			peap.Protocol,
+		},
 		ProtocolPriority: []protocol.Type{tls.TypeTLS, peap.TypePEAP},
 		ProtocolSettings: map[protocol.Type]interface{}{
 			tls.TypeTLS: tls.Settings{
@@ -92,7 +92,12 @@ func (s *Server) GetEAPSettings() protocol.Settings {
 					Certificates: []ttls.Certificate{s.cert},
 				},
 				InnerProtocols: protocol.Settings{
-					Protocols:        append(protocols, gtc.Protocol, mschapv2.Protocol),
+					Protocols: []protocol.ProtocolConstructor{
+						identity.Protocol,
+						legacy_nak.Protocol,
+						gtc.Protocol,
+						mschapv2.Protocol,
+					},
 					ProtocolPriority: []protocol.Type{gtc.TypeGTC, mschapv2.TypeMSCHAPv2},
 					ProtocolSettings: map[protocol.Type]interface{}{
 						mschapv2.TypeMSCHAPv2: mschapv2.Settings{

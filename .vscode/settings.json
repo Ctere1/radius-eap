@@ -1,0 +1,8 @@
+{
+    "go.testFlags": ["-count=1", "-failfast", "-shuffle=on", "-v"],
+    "go.coverOnSingleTest": true,
+    "go.coverOnTestPackage": true,
+    "go.testEnvVars": {
+        "CI": "true",
+    },
+}

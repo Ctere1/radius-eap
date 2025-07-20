@@ -6,7 +6,21 @@ on:
   pull_request:
     branches: ["main"]
 
+permissions:
+  id-token: write
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y eapoltest
+      - uses: golangci/golangci-lint-action@v8
   test:
     runs-on: ubuntu-latest
     steps:
@@ -14,8 +28,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v8
-      - name: Build
-        run: go build -v ./...
-      - name: Test
-        run: go test -v ./...
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y eapoltest pipx
+          pipx ensurepath
+          sudo pipx ensurepath --global
+      - run: go build -v ./...
+      - run: |
+          make test-gen-cert
+          go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - uses: codecov/codecov-action@v5
+        with:
+          use_oidc: true

@@ -227,7 +227,12 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 		context = []byte{byte(TypeTLS)}
 	}
 	ksm, err := cs.ExportKeyingMaterial(label, context, 64+64)
-	ctx.Log().Debugf("TLS: ksm % x %v", ksm, err)
+	if err != nil {
+		ctx.Log().WithError(err).Warning("failed to export keying material")
+		p.st.ContextCancel()
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return
+	}
 	p.st.MPPEKey = ksm
 	p.st.HandshakeDone = true
 	if p.Inner == nil {

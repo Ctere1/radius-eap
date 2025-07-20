@@ -43,7 +43,7 @@ func (ctx *context) Inner(p protocol.Payload, t protocol.Type) protocol.Context 
 	return nctx
 }
 func (ctx *context) EndInnerProtocol(st protocol.Status) {
-	ctx.log.Info("Ending protocol")
+	ctx.log.Debug("Ending protocol")
 	if ctx.parent != nil {
 		ctx.parent.EndInnerProtocol(st)
 		return
