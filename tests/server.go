@@ -48,7 +48,7 @@ func (s *Server) Run(ctx context.Context) {
 	go func() {
 		<-ctx.Done()
 		err := s.rs.Shutdown(ctx)
-		if err != nil {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			panic(err)
 		}
 	}()
