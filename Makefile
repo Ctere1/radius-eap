@@ -19,7 +19,7 @@ test: test-gen-cert
 		-coverprofile=${PWD}/coverage.txt \
 		-covermode=atomic \
 		-v \
-		beryju.io/radius-eap/tests
+		beryju.io/radius-eap
 	go tool cover \
 		-html ${PWD}/coverage.txt \
 		-o ${PWD}/coverage.html

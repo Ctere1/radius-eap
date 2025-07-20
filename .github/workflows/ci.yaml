@@ -28,6 +28,7 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y eapoltest
+          "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
       - run: go build -v ./...
       - run: make test
       - uses: codecov/codecov-action@v5
