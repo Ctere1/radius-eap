@@ -31,9 +31,7 @@ jobs:
           pipx ensurepath
           sudo pipx ensurepath --global
       - run: go build -v ./...
-      - run: |
-          make test-gen-cert
-          go test -timeout 30s -v -coverprofile=coverage.txt -covermode=atomic ./...
+      - run: make test
       - uses: codecov/codecov-action@v5
         with:
           use_oidc: true
