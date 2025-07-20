@@ -46,6 +46,5 @@ func DebugStaticCredentials(user, password []byte) func(req AuthRequest) (*AuthR
 			return nil, err
 		}
 		return res, nil
-
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"beryju.io/radius-eap/protocol/mschapv2"
 	"beryju.io/radius-eap/protocol/peap"
 	"beryju.io/radius-eap/protocol/tls"
+	log "github.com/sirupsen/logrus"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2869"
 )
@@ -26,6 +27,7 @@ type Server struct {
 }
 
 func main() {
+	log.SetLevel(log.TraceLevel)
 	s := &Server{
 		eapState: map[string]*protocol.State{},
 	}
@@ -34,7 +36,7 @@ func main() {
 		SecretSource: s,
 		Addr:         "0.0.0.0:1812",
 	}
-	cert, err := ttls.LoadX509KeyPair("./cert.pem", "./key.pem")
+	cert, err := ttls.LoadX509KeyPair("./examples/server/cert.pem", "./examples/server/key.pem")
 	if err != nil {
 		panic(err)
 	}
@@ -98,7 +100,7 @@ func (s *Server) GetEAPSettings() protocol.Settings {
 						gtc.Protocol,
 						mschapv2.Protocol,
 					},
-					ProtocolPriority: []protocol.Type{gtc.TypeGTC, mschapv2.TypeMSCHAPv2},
+					ProtocolPriority: []protocol.Type{mschapv2.TypeMSCHAPv2, gtc.TypeGTC},
 					ProtocolSettings: map[protocol.Type]interface{}{
 						mschapv2.TypeMSCHAPv2: mschapv2.Settings{
 							AuthenticateRequest: mschapv2.DebugStaticCredentials(
@@ -107,12 +109,12 @@ func (s *Server) GetEAPSettings() protocol.Settings {
 							ServerIdentifier: "radius-eap example",
 						},
 						gtc.TypeGTC: gtc.Settings{
-							ChallengeHandler: func(ctx protocol.Context) (gtc.GetChallenge, gtc.ValidateResponse) {
-								return func() []byte {
-										return []byte("challenge")
-									}, func(answer []byte) {
-										fmt.Println(string(answer))
-									}
+							Challenge: func(ctx protocol.Context, first bool) []byte {
+								return []byte("Password: ")
+							},
+							ValidateResponse: func(ctx protocol.Context, data []byte) protocol.Status {
+								fmt.Println(string(data))
+								return protocol.StatusSuccess
 							},
 						},
 					},

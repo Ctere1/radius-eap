@@ -2,9 +2,7 @@ package gtc
 
 import "beryju.io/radius-eap/protocol"
 
-type GetChallenge func() []byte
-type ValidateResponse func(answer []byte)
-
 type Settings struct {
-	ChallengeHandler func(ctx protocol.Context) (GetChallenge, ValidateResponse)
+	Challenge        func(ctx protocol.Context, first bool) []byte
+	ValidateResponse func(ctx protocol.Context, data []byte) protocol.Status
 }
