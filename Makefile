@@ -17,6 +17,7 @@ test: test-cert-gen
 		-shuffle=on \
 		-coverprofile=${PWD}/coverage.txt \
 		-covermode=atomic \
+		-coverpkg=../... \
 		-v \
 		$(shell go list ./...)
 	go tool cover \
