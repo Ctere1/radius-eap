@@ -1,15 +1,14 @@
 SHELL := /bin/bash
 .ONESHELL:
 .SHELLFLAGS += -x -e -o pipefail
-.PHONY: test-gen-cert lint test
 
 PWD = $(shell pwd)
-CERT_DIR = tests/certs/
+CERT_DIR = ${PWD}/tests/certs/
 
 lint:
 	golangci-lint run -v --timeout 5000s
 
-test: test-gen-cert
+test: test-cert-gen
 	go test \
 		-timeout 30s \
 		-p 1 \
@@ -19,12 +18,15 @@ test: test-gen-cert
 		-coverprofile=${PWD}/coverage.txt \
 		-covermode=atomic \
 		-v \
-		beryju.io/radius-eap
+		$(shell go list ./...)
 	go tool cover \
 		-html ${PWD}/coverage.txt \
 		-o ${PWD}/coverage.html
 
-test-gen-cert:
+test-cert-clean:
+	rm -rf ${CERT_DIR}
+
+test-cert-gen:
 	crtls -o ${CERT_DIR} ca generate
 	crtls -o ${CERT_DIR} cert generate client
 	crtls -o ${CERT_DIR} cert generate server

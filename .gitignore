@@ -1,2 +1,2 @@
 tests/certs/**
-coverage.txt
+coverage.*
