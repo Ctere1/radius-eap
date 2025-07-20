@@ -28,7 +28,8 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y eapoltest
-          "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install beryju/tap/crtls
       - run: go build -v ./...
       - run: make test
       - uses: codecov/codecov-action@v5

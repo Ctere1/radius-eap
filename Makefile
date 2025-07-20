@@ -25,7 +25,6 @@ test: test-gen-cert
 		-o ${PWD}/coverage.html
 
 test-gen-cert:
-	brew install beryju/tap/crtls
 	crtls -o ${CERT_DIR} ca generate
 	crtls -o ${CERT_DIR} cert generate client
 	crtls -o ${CERT_DIR} cert generate server
