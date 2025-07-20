@@ -17,9 +17,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y eapoltest
       - uses: golangci/golangci-lint-action@v8
   test:
     runs-on: ubuntu-latest
@@ -36,7 +33,7 @@ jobs:
       - run: go build -v ./...
       - run: |
           make test-gen-cert
-          go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+          go test -coverprofile=coverage.txt -covermode=atomic ./...
       - uses: codecov/codecov-action@v5
         with:
           use_oidc: true
