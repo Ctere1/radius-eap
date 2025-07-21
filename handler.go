@@ -107,7 +107,6 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 
 	next := func() (*eap.Payload, error) {
 		st.ProtocolIndex += 1
-		st.TypeState = map[protocol.Type]any{}
 		stm.SetEAPState(p.state, st)
 		return p.handleEAP(pp, stm, nil)
 	}

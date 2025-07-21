@@ -31,13 +31,16 @@ func (p *Payload) Encode() ([]byte, error) {
 
 func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	if ctx.IsProtocolStart(TypeIdentity) {
+		ctx.SetProtocolState(TypeIdentity, &State{
+			Identity: p.Identity,
+		})
 		ctx.EndInnerProtocol(protocol.StatusNextProtocol)
 	}
 	return nil
 }
 
 func (p *Payload) Offerable() bool {
-	return false
+	return true
 }
 
 func (p *Payload) String() string {

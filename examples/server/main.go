@@ -80,7 +80,11 @@ func (s *Server) GetEAPSettings() protocol.Settings {
 			tls.Protocol,
 			peap.Protocol,
 		},
-		ProtocolPriority: []protocol.Type{tls.TypeTLS, peap.TypePEAP},
+		ProtocolPriority: []protocol.Type{
+			identity.TypeIdentity,
+			tls.TypeTLS,
+			peap.TypePEAP,
+		},
 		ProtocolSettings: map[protocol.Type]interface{}{
 			tls.TypeTLS: tls.Settings{
 				Config: &ttls.Config{
@@ -88,10 +92,12 @@ func (s *Server) GetEAPSettings() protocol.Settings {
 					ClientAuth:   ttls.RequireAnyClientCert,
 				},
 				HandshakeSuccessful: func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status {
+					ident := ctx.GetProtocolState(identity.TypeIdentity).(*identity.State).Identity
+					ctx.Log().Infof("Successful handshake with Identity %s", ident)
 					ctx.AddResponseModifier(func(r, q *radius.Packet) error {
-						rfc2868.TunnelType_Set(r, 0x01, rfc3580.TunnelType_Value_VLAN)
-						rfc2868.TunnelMediumType_Set(r, 0x01, rfc2868.TunnelMediumType_Value_IEEE802)
-						rfc2868.TunnelPrivateGroupID_Set(r, 0x01, []byte{13})
+						_ = rfc2868.TunnelType_Set(r, 0x01, rfc3580.TunnelType_Value_VLAN)
+						_ = rfc2868.TunnelMediumType_Set(r, 0x01, rfc2868.TunnelMediumType_Value_IEEE802)
+						_ = rfc2868.TunnelPrivateGroupID_Set(r, 0x01, []byte{13})
 						return nil
 					})
 					return protocol.StatusSuccess
