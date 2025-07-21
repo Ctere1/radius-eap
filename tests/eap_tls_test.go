@@ -82,7 +82,7 @@ func TestEAP_TLS_Reject(t *testing.T) {
 						_ = rfc2868.TunnelPrivateGroupID_Set(r, 0x01, []byte{13})
 						return nil
 					})
-					return protocol.StatusSuccess
+					return protocol.StatusError
 				},
 			},
 		},
