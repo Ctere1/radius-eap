@@ -24,6 +24,9 @@ type Context interface {
 	SetProtocolState(p Type, s interface{})
 	IsProtocolStart(p Type) bool
 
+	ResponseModifier
+	AddResponseModifier(func(r, q *radius.Packet) error)
+
 	HandleInnerEAP(Payload, StateManager) (Payload, error)
 	Inner(Payload, Type) Context
 	EndInnerProtocol(Status)

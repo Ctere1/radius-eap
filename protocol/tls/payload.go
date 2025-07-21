@@ -89,6 +89,7 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	}()
 	if ctx.IsProtocolStart(TypeTLS) {
 		p.st = NewState(ctx).(*State)
+		p.st.HandshakeCtx = ctx.Inner(nil, p.Type())
 		return &Payload{
 			Flags: FlagTLSStart,
 		}
@@ -173,7 +174,7 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	if err != nil {
 		return err
 	}
-	return nil
+	return p.st.HandshakeCtx.ModifyRADIUSResponse(r, q)
 }
 
 func (p *Payload) tlsInit(ctx protocol.Context) {
@@ -236,7 +237,7 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 	p.st.MPPEKey = ksm
 	p.st.HandshakeDone = true
 	if p.Inner == nil {
-		p.st.FinalStatus = ctx.ProtocolSettings().(Settings).HandshakeSuccessful(ctx, cs.PeerCertificates)
+		p.st.FinalStatus = ctx.ProtocolSettings().(Settings).HandshakeSuccessful(p.st.HandshakeCtx, cs.PeerCertificates)
 	}
 }
 

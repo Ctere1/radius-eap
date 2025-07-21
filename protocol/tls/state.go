@@ -18,6 +18,7 @@ type State struct {
 	Conn             *BuffConn
 	Context          context.Context
 	ContextCancel    context.CancelFunc
+	HandshakeCtx     protocol.Context
 }
 
 func NewState(c protocol.Context) interface{} {

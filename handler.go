@@ -80,7 +80,7 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 	}
 	err = p.setMessageAuthenticator(rres)
 	if err != nil {
-		log.WithError(err).Warning("failed to send message authenticator")
+		log.WithError(err).Warning("failed to set message authenticator")
 		sendErrorResponse(w, r)
 		return
 	}
@@ -133,7 +133,6 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 			settings:    stm.GetEAPSettings().ProtocolSettings[t],
 		}
 		ctx.handleInner = func(pp protocol.Payload, sm protocol.StateManager, ctx protocol.Context) (protocol.Payload, error) {
-			// cctx := ctx.Inner(np, np.Type(), nil).(*context)
 			return p.handleEAP(pp, sm, ctx.(*context))
 		}
 	}
