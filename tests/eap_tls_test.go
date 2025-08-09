@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	eap "beryju.io/radius-eap"
 	"beryju.io/radius-eap/protocol"
 	"beryju.io/radius-eap/protocol/identity"
 	"beryju.io/radius-eap/protocol/legacy_nak"
@@ -21,6 +22,7 @@ func TestEAP_TLS(t *testing.T) {
 	s := NewTestServer(t)
 	ident := ""
 	s.config = protocol.Settings{
+		Logger: eap.DefaultLogger(),
 		Protocols: []protocol.ProtocolConstructor{
 			identity.Protocol,
 			legacy_nak.Protocol,
@@ -63,6 +65,7 @@ func TestEAP_TLS(t *testing.T) {
 func TestEAP_TLS_Reject(t *testing.T) {
 	s := NewTestServer(t)
 	s.config = protocol.Settings{
+		Logger: eap.DefaultLogger(),
 		Protocols: []protocol.ProtocolConstructor{
 			identity.Protocol,
 			legacy_nak.Protocol,

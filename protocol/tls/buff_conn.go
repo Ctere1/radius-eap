@@ -7,8 +7,8 @@ import (
 	"net"
 	"time"
 
+	"beryju.io/radius-eap/protocol"
 	"github.com/avast/retry-go/v4"
-	log "github.com/sirupsen/logrus"
 )
 
 type BuffConn struct {
@@ -21,9 +21,10 @@ type BuffConn struct {
 	writtenByteCount        int
 
 	retryOptions []retry.Option
+	log          protocol.Logger
 }
 
-func NewBuffConn(initialData []byte, ctx context.Context) *BuffConn {
+func NewBuffConn(initialData []byte, ctx context.Context, cctx protocol.Context) *BuffConn {
 	c := &BuffConn{
 		reader: bytes.NewBuffer(initialData),
 		writer: bytes.NewBuffer([]byte{}),
@@ -35,6 +36,7 @@ func NewBuffConn(initialData []byte, ctx context.Context) *BuffConn {
 			retry.MaxDelay(100 * time.Millisecond),
 			retry.Attempts(0),
 		},
+		log: cctx.Log(),
 	}
 	return c
 }
@@ -58,7 +60,7 @@ func (conn BuffConn) OutboundData() []byte {
 func (conn *BuffConn) UpdateData(data []byte) {
 	conn.reader.Write(data)
 	conn.writtenByteCount += len(data)
-	log.Debugf("TLS(buffcon): Appending new data %d (total %d, expecting %d)", len(data), conn.writtenByteCount, conn.expectedWriterByteCount)
+	conn.log.Debug("TLS(buffcon): Appending new data %d (total %d, expecting %d)", len(data), conn.writtenByteCount, conn.expectedWriterByteCount)
 }
 
 func (conn BuffConn) NeedsMoreData() bool {
@@ -72,13 +74,13 @@ func (conn *BuffConn) Read(p []byte) (int, error) {
 	d, err := retry.DoWithData(
 		func() (int, error) {
 			if conn.reader.Len() == 0 {
-				log.Debugf("TLS(buffcon): Attempted read %d from empty buffer, stalling...", len(p))
+				conn.log.Debug("TLS(buffcon): Attempted read %d from empty buffer, stalling...", len(p))
 				return 0, errStall
 			}
 			if conn.expectedWriterByteCount > 0 {
 				// If we're waiting for more data, we need to stall
 				if conn.writtenByteCount < int(conn.expectedWriterByteCount) {
-					log.Debugf("TLS(buffcon): Attempted read %d while waiting for bytes %d, stalling...", len(p), conn.expectedWriterByteCount-conn.reader.Len())
+					conn.log.Debug("TLS(buffcon): Attempted read %d while waiting for bytes %d, stalling...", len(p), conn.expectedWriterByteCount-conn.reader.Len())
 					return 0, errStall
 				}
 				// If we have all the data, reset how much we're expecting to still get
@@ -90,7 +92,7 @@ func (conn *BuffConn) Read(p []byte) (int, error) {
 				conn.writtenByteCount = 0
 			}
 			n, err := conn.reader.Read(p)
-			log.Debugf("TLS(buffcon): Read: %d into %d (total %d)", n, len(p), conn.reader.Len())
+			conn.log.Debug("TLS(buffcon): Read: %d into %d (total %d)", n, len(p), conn.reader.Len())
 			return n, err
 		},
 		conn.retryOptions...,
@@ -99,7 +101,7 @@ func (conn *BuffConn) Read(p []byte) (int, error) {
 }
 
 func (conn BuffConn) Write(p []byte) (int, error) {
-	log.Debugf("TLS(buffcon): Write: %d", len(p))
+	conn.log.Debug("TLS(buffcon): Write: %d", len(p))
 	return conn.writer.Write(p)
 }
 

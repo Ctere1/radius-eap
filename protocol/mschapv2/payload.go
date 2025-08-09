@@ -5,12 +5,10 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"beryju.io/radius-eap/debug"
 	"beryju.io/radius-eap/protocol"
 	"beryju.io/radius-eap/protocol/eap"
 	"beryju.io/radius-eap/protocol/peap"
 	"github.com/gorilla/securecookie"
-	log "github.com/sirupsen/logrus"
 	"layeh.com/radius"
 	"layeh.com/radius/vendors/microsoft"
 )
@@ -55,7 +53,6 @@ func (p *Payload) Type() protocol.Type {
 }
 
 func (p *Payload) Decode(raw []byte) error {
-	log.WithField("raw", debug.FormatBytes(raw)).Debugf("MSCHAPv2: decode raw")
 	p.OpCode = OpCode(raw[0])
 	if p.OpCode == OpSuccess {
 		return nil
@@ -117,11 +114,11 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		MSCHAPv2ID: rootEap.ID + 1,
 	}
 
-	ctx.Log().Debugf("MSCHAPv2: OpCode: %d", p.OpCode)
+	ctx.Log().Debug("MSCHAPv2: OpCode", "opcode", p.OpCode)
 	if p.OpCode == OpResponse {
 		res, err := ParseResponse(p.Response)
 		if err != nil {
-			ctx.Log().WithError(err).Warning("MSCHAPv2: failed to parse response")
+			ctx.Log().Warn("MSCHAPv2: failed to parse response", "error", err)
 			return nil
 		}
 		p.st.PeerChallenge = res.Challenge
@@ -130,11 +127,11 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 			PeerChallenge: p.st.PeerChallenge,
 		})
 		if err != nil {
-			ctx.Log().WithError(err).Warning("MSCHAPv2: failed to check password")
+			ctx.Log().Warn("MSCHAPv2: failed to check password", "error", err)
 			return nil
 		}
 		if !bytes.Equal(auth.NTResponse, res.NTResponse) {
-			ctx.Log().Warning("MSCHAPv2: NT response mismatch")
+			ctx.Log().Warn("MSCHAPv2: NT response mismatch")
 			return nil
 		}
 		ctx.Log().Info("MSCHAPv2: Successfully checked password")
@@ -172,7 +169,6 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	if r.Code != radius.CodeAccessAccept {
 		return nil
 	}
-	log.Debug("MSCHAPv2: Radius modifier")
 	if len(microsoft.MSMPPERecvKey_Get(r, q)) < 1 {
 		err := microsoft.MSMPPERecvKey_Set(r, p.st.AuthResponse.RecvKey)
 		if err != nil {

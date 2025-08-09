@@ -4,9 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"beryju.io/radius-eap/debug"
 	"beryju.io/radius-eap/protocol"
-	log "github.com/sirupsen/logrus"
 )
 
 const TypeEAP protocol.Type = 0
@@ -44,7 +42,6 @@ func (p *Payload) Decode(raw []byte) error {
 	if len(raw) > 4 && (p.Code == protocol.CodeRequest || p.Code == protocol.CodeResponse) {
 		p.MsgType = protocol.Type(raw[4])
 	}
-	log.WithField("raw", debug.FormatBytes(raw)).Trace("EAP: decode raw")
 	p.RawPayload = raw[5:]
 	if p.Payload == nil {
 		pp, _, err := EmptyPayload(p.Settings, p.MsgType)

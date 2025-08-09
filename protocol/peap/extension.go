@@ -3,9 +3,7 @@ package peap
 import (
 	"encoding/binary"
 
-	"beryju.io/radius-eap/debug"
 	"beryju.io/radius-eap/protocol"
-	log "github.com/sirupsen/logrus"
 )
 
 const TypePEAPExtension protocol.Type = 33
@@ -15,7 +13,6 @@ type ExtensionPayload struct {
 }
 
 func (ep *ExtensionPayload) Decode(raw []byte) error {
-	log.WithField("raw", debug.FormatBytes(raw)).Debugf("PEAP-Extension: decode raw")
 	ep.AVPs = []ExtensionAVP{}
 	offset := 0
 	for {
@@ -34,7 +31,6 @@ func (ep *ExtensionPayload) Decode(raw []byte) error {
 }
 
 func (ep *ExtensionPayload) Encode() ([]byte, error) {
-	log.Debug("PEAP-Extension: encode")
 	buff := []byte{}
 	for _, avp := range ep.AVPs {
 		buff = append(buff, avp.Encode()...)

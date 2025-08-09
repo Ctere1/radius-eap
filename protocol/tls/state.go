@@ -19,6 +19,7 @@ type State struct {
 	Context          context.Context
 	ContextCancel    context.CancelFunc
 	HandshakeCtx     protocol.Context
+	Logger           protocol.Logger
 }
 
 func NewState(c protocol.Context) interface{} {

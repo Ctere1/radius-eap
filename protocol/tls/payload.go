@@ -13,7 +13,6 @@ import (
 	"beryju.io/radius-eap/debug"
 	"beryju.io/radius-eap/protocol"
 	"github.com/avast/retry-go/v4"
-	log "github.com/sirupsen/logrus"
 	"layeh.com/radius"
 	"layeh.com/radius/vendors/microsoft"
 )
@@ -60,7 +59,6 @@ func (p *Payload) Decode(raw []byte) error {
 	} else {
 		p.Data = raw[0:]
 	}
-	log.WithField("raw", debug.FormatBytes(p.Data)).WithField("size", len(p.Data)).WithField("flags", p.Flags).Trace("TLS: decode raw")
 	return nil
 }
 
@@ -90,6 +88,7 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	if ctx.IsProtocolStart(TypeTLS) {
 		p.st = NewState(ctx).(*State)
 		p.st.HandshakeCtx = ctx.Inner(nil, p.Type())
+		p.st.Logger = ctx.Log()
 		return &Payload{
 			Flags: FlagTLSStart,
 		}
@@ -101,7 +100,7 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	} else if len(p.Data) > 0 {
 		ctx.Log().Debug("TLS: Updating buffer with new TLS data from packet")
 		if p.Flags&FlagLengthIncluded != 0 && p.st.Conn.expectedWriterByteCount == 0 {
-			ctx.Log().Debugf("TLS: Expecting %d total bytes, will buffer", p.Length)
+			ctx.Log().Debug("TLS: Expecting total bytes, will buffer", "total", p.Length)
 			p.st.Conn.expectedWriterByteCount = int(p.Length)
 		} else if p.Flags&FlagLengthIncluded != 0 {
 			ctx.Log().Debug("TLS: No length included, not buffering")
@@ -158,7 +157,7 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	if p.st == nil || !p.st.HandshakeDone {
 		return nil
 	}
-	log.Debug("TLS: Adding MPPE Keys")
+	p.st.Logger.Debug("TLS: Adding MPPE Keys")
 	// TLS overrides other protocols' MPPE keys
 	if len(microsoft.MSMPPERecvKey_Get(r, q)) > 0 {
 		microsoft.MSMPPERecvKey_Del(r)
@@ -180,7 +179,7 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 func (p *Payload) tlsInit(ctx protocol.Context) {
 	ctx.Log().Debug("TLS: no TLS connection in state yet, starting connection")
 	p.st.Context, p.st.ContextCancel = context.WithTimeout(context.Background(), staleConnectionTimeout*time.Second)
-	p.st.Conn = NewBuffConn(p.Data, p.st.Context)
+	p.st.Conn = NewBuffConn(p.Data, p.st.Context, ctx)
 	cfg := ctx.ProtocolSettings().(TLSConfig).TLSConfig().Clone()
 
 	if klp, ok := os.LookupEnv("SSLKEYLOGFILE"); ok {
@@ -192,7 +191,7 @@ func (p *Payload) tlsInit(ctx protocol.Context) {
 	}
 
 	cfg.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-		ctx.Log().Debugf("TLS: ClientHello: %+v\n", chi)
+		ctx.Log().Debug("TLS: ClientHello", "ch", chi)
 		p.st.ClientHello = chi
 		return nil, nil
 	}
@@ -201,7 +200,7 @@ func (p *Payload) tlsInit(ctx protocol.Context) {
 	go func() {
 		err := p.st.TLS.HandshakeContext(p.st.Context)
 		if err != nil {
-			ctx.Log().WithError(err).Debug("TLS: Handshake error")
+			ctx.Log().Debug("TLS: Handshake error", "error", err)
 			p.st.FinalStatus = protocol.StatusError
 			ctx.EndInnerProtocol(protocol.StatusError)
 			return
@@ -217,19 +216,19 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 	var context []byte
 	switch cs.Version {
 	case tls.VersionTLS10:
-		ctx.Log().Debugf("TLS: Version %d (1.0)", cs.Version)
+		ctx.Log().Debug("TLS: Version(1.0)", "ver", cs.Version)
 	case tls.VersionTLS11:
-		ctx.Log().Debugf("TLS: Version %d (1.1)", cs.Version)
+		ctx.Log().Debug("TLS: Version(1.1)", "ver", cs.Version)
 	case tls.VersionTLS12:
-		ctx.Log().Debugf("TLS: Version %d (1.2)", cs.Version)
+		ctx.Log().Debug("TLS: Version(1.2)", "ver", cs.Version)
 	case tls.VersionTLS13:
-		ctx.Log().Debugf("TLS: Version %d (1.3)", cs.Version)
+		ctx.Log().Debug("TLS: Version(1.3)", "ver", cs.Version)
 		label = "EXPORTER_EAP_TLS_Key_Material"
 		context = []byte{byte(TypeTLS)}
 	}
 	ksm, err := cs.ExportKeyingMaterial(label, context, 64+64)
 	if err != nil {
-		ctx.Log().WithError(err).Warning("failed to export keying material")
+		ctx.Log().Warn("failed to export keying material", "error", err)
 		p.st.ContextCancel()
 		ctx.EndInnerProtocol(protocol.StatusError)
 		return
@@ -243,12 +242,12 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 
 func (p *Payload) startChunkedTransfer(data []byte) *Payload {
 	if len(data) > maxChunkSize {
-		log.WithField("length", len(data)).Debug("TLS: Data needs to be chunked")
+		p.st.Logger.Debug("TLS: Data needs to be chunked", "length", len(data))
 		p.st.RemainingChunks = append(p.st.RemainingChunks, slices.Collect(slices.Chunk(data, maxChunkSize))...)
 		p.st.TotalPayloadSize = len(data)
 		return p.sendNextChunk()
 	}
-	log.WithField("length", len(data)).Debug("TLS: Sending data un-chunked")
+	p.st.Logger.Debug("TLS: Sending data un-chunked", "length", len(data))
 	p.st.Conn.writer.Reset()
 	return &Payload{
 		Flags:  FlagLengthIncluded,
@@ -259,21 +258,21 @@ func (p *Payload) startChunkedTransfer(data []byte) *Payload {
 
 func (p *Payload) sendNextChunk() *Payload {
 	nextChunk := p.st.RemainingChunks[0]
-	log.WithField("raw", debug.FormatBytes(nextChunk)).Debug("TLS: Sending next chunk")
+	p.st.Logger.Debug("TLS: Sending next chunk", "raw", debug.FormatBytes(nextChunk))
 	p.st.RemainingChunks = p.st.RemainingChunks[1:]
 	flags := FlagLengthIncluded
 	if p.st.HasMore() {
-		log.WithField("chunks", len(p.st.RemainingChunks)).Debug("TLS: More chunks left")
+		p.st.Logger.Debug("TLS: More chunks left", "chunks", len(p.st.RemainingChunks))
 		flags += FlagMoreFragments
 	} else {
 		// Last chunk, reset the connection buffers and pending payload size
 		defer func() {
-			log.Debug("TLS: Sent last chunk")
+			p.st.Logger.Debug("TLS: Sent last chunk")
 			p.st.Conn.writer.Reset()
 			p.st.TotalPayloadSize = 0
 		}()
 	}
-	log.WithField("length", p.st.TotalPayloadSize).Debug("TLS: Total payload size")
+	p.st.Logger.Debug("TLS: Total payload size", "length", p.st.TotalPayloadSize)
 	return &Payload{
 		Flags:  flags,
 		Length: uint32(p.st.TotalPayloadSize),

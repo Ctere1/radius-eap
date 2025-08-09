@@ -5,12 +5,10 @@ import (
 	"errors"
 	"fmt"
 
-	"beryju.io/radius-eap/debug"
 	"beryju.io/radius-eap/protocol"
 	"beryju.io/radius-eap/protocol/eap"
 	"beryju.io/radius-eap/protocol/identity"
 	"beryju.io/radius-eap/protocol/tls"
-	log "github.com/sirupsen/logrus"
 )
 
 const TypePEAP protocol.Type = 25
@@ -41,7 +39,6 @@ func (p *Payload) HasInner() protocol.Payload {
 }
 
 func (p *Payload) Decode(raw []byte) error {
-	log.WithField("raw", debug.FormatBytes(raw)).Debug("PEAP: Decode")
 	p.raw = raw
 	return nil
 }
@@ -49,7 +46,6 @@ func (p *Payload) Decode(raw []byte) error {
 // Inner EAP packets in PEAP may not include the header, hence we need a custom decoder
 // https://datatracker.ietf.org/doc/html/draft-kamath-pppext-peapv0-00.txt#section-1.1
 func (p *Payload) Encode() ([]byte, error) {
-	log.Debug("PEAP: Encoding inner EAP")
 	if p.eap.Payload == nil {
 		return []byte{}, errors.New("PEAP: no payload in response eap packet")
 	}
@@ -117,18 +113,18 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 
 	ep, err := p.eapInnerDecode(ctx)
 	if err != nil {
-		ctx.Log().WithError(err).Warning("PEAP: failed to decode inner EAP")
+		ctx.Log().Warn("PEAP: failed to decode inner EAP", "error", err)
 		return &eap.Payload{
 			Code: protocol.CodeFailure,
 			ID:   rootEap.ID + 1,
 		}
 	}
 	p.eap = ep
-	ctx.Log().Debugf("PEAP: Decoded inner EAP to %s", ep.String())
+	ctx.Log().Debug("PEAP: Decoded inner EAP", "type", ep.String())
 
 	res, err := ctx.HandleInnerEAP(ep, p)
 	if err != nil {
-		ctx.Log().WithError(err).Warning("PEAP: failed to handle inner EAP")
+		ctx.Log().Warn("PEAP: failed to handle inner EAP", "error", err)
 		return nil
 	}
 	// Normal payloads need to be wrapped in PEAP to use the correct encoding (see Encode() above)

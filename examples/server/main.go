@@ -15,7 +15,6 @@ import (
 	"beryju.io/radius-eap/protocol/mschapv2"
 	"beryju.io/radius-eap/protocol/peap"
 	"beryju.io/radius-eap/protocol/tls"
-	log "github.com/sirupsen/logrus"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2868"
 	"layeh.com/radius/rfc2869"
@@ -29,7 +28,6 @@ type Server struct {
 }
 
 func main() {
-	log.SetLevel(log.TraceLevel)
 	s := &Server{
 		eapState: map[string]*protocol.State{},
 	}
@@ -74,6 +72,7 @@ func (s *Server) SetEAPState(key string, state *protocol.State) {
 
 func (s *Server) GetEAPSettings() protocol.Settings {
 	return protocol.Settings{
+		Logger: eap.DefaultLogger(),
 		Protocols: []protocol.ProtocolConstructor{
 			identity.Protocol,
 			legacy_nak.Protocol,
@@ -93,7 +92,7 @@ func (s *Server) GetEAPSettings() protocol.Settings {
 				},
 				HandshakeSuccessful: func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status {
 					ident := ctx.GetProtocolState(identity.TypeIdentity).(*identity.State).Identity
-					ctx.Log().Infof("Successful handshake with Identity %s", ident)
+					ctx.Log().Info("Successful handshake with Identity", "identity", ident)
 					ctx.AddResponseModifier(func(r, q *radius.Packet) error {
 						_ = rfc2868.TunnelType_Set(r, 0x01, rfc3580.TunnelType_Value_VLAN)
 						_ = rfc2868.TunnelMediumType_Set(r, 0x01, rfc2868.TunnelMediumType_Value_IEEE802)

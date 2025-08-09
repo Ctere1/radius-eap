@@ -17,6 +17,7 @@ type Settings struct {
 	Protocols        []ProtocolConstructor
 	ProtocolPriority []Type
 	ProtocolSettings map[Type]interface{}
+	Logger           Logger
 }
 
 type State struct {

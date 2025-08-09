@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	log "github.com/sirupsen/logrus"
 	"layeh.com/radius"
 )
 
@@ -13,6 +12,14 @@ const (
 	StatusError
 	StatusNextProtocol
 )
+
+type Logger interface {
+	Debug(msg string, args ...interface{})
+	Info(msg string, args ...interface{})
+	Warn(msg string, args ...interface{})
+	Error(msg string, args ...interface{})
+	With(args ...interface{}) Logger
+}
 
 type Context interface {
 	Packet() *radius.Request
@@ -31,5 +38,5 @@ type Context interface {
 	Inner(Payload, Type) Context
 	EndInnerProtocol(Status)
 
-	Log() *log.Entry
+	Log() Logger
 }

@@ -5,6 +5,7 @@ import (
 	ttls "crypto/tls"
 	"testing"
 
+	eap "beryju.io/radius-eap"
 	"beryju.io/radius-eap/protocol"
 	"beryju.io/radius-eap/protocol/identity"
 	"beryju.io/radius-eap/protocol/legacy_nak"
@@ -16,6 +17,7 @@ import (
 func TestEAP_PEAP_MSCHAPv2(t *testing.T) {
 	s := NewTestServer(t)
 	s.config = protocol.Settings{
+		Logger: eap.DefaultLogger(),
 		Protocols: []protocol.ProtocolConstructor{
 			identity.Protocol,
 			legacy_nak.Protocol,
@@ -59,6 +61,7 @@ func TestEAP_PEAP_MSCHAPv2(t *testing.T) {
 func TestEAP_PEAP_MSCHAPv2_Reject(t *testing.T) {
 	s := NewTestServer(t)
 	s.config = protocol.Settings{
+		Logger: eap.DefaultLogger(),
 		Protocols: []protocol.ProtocolConstructor{
 			identity.Protocol,
 			legacy_nak.Protocol,

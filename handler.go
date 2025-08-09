@@ -11,21 +11,21 @@ import (
 	"beryju.io/radius-eap/protocol/eap"
 	"beryju.io/radius-eap/protocol/legacy_nak"
 	"github.com/gorilla/securecookie"
-	log "github.com/sirupsen/logrus"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2869"
 )
 
-func sendErrorResponse(w radius.ResponseWriter, r *radius.Request) {
+func (p *Packet) sendErrorResponse(w radius.ResponseWriter, r *radius.Request) {
 	rres := r.Response(radius.CodeAccessReject)
 	err := w.Write(rres)
 	if err != nil {
-		log.WithError(err).Warning("failed to send response")
+		p.stm.GetEAPSettings().Logger.Error("failed to send response", "error", err)
 	}
 }
 
 func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) {
+	l := p.stm.GetEAPSettings().Logger
 	p.r = r
 	rst := rfc2865.State_GetString(r.Packet)
 	if rst == "" {
@@ -49,51 +49,53 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 		}
 	} else {
 		rres.Code = radius.CodeAccessReject
-		log.WithError(err).Debug("Rejecting request")
+		l.Debug("Rejecting request", "error", err)
 	}
 	for _, mod := range p.responseModifiers {
 		err := mod.ModifyRADIUSResponse(rres, r.Packet)
 		if err != nil {
-			log.WithError(err).Warning("Root-EAP: failed to modify response packet")
+			l.Warn("Root-EAP: failed to modify response packet", "error", err)
 			break
 		}
 	}
 
 	err = rfc2865.State_SetString(rres, p.state)
 	if err != nil {
-		log.WithError(err).Warning("failed to set state")
-		sendErrorResponse(w, r)
+		l.Warn("failed to set state", "error", err)
+		p.sendErrorResponse(w, r)
 		return
 	}
 	eapEncoded, err := rp.Encode()
 	if err != nil {
-		log.WithError(err).Warning("failed to encode response")
-		sendErrorResponse(w, r)
+		l.Warn("failed to encode response", "error", err)
+		p.sendErrorResponse(w, r)
 		return
 	}
-	log.WithField("length", len(eapEncoded)).WithField("type", fmt.Sprintf("%T", rp.eap.Payload)).Debug("Root-EAP: encapsulated challenge")
+	l.Debug("Root-EAP: encapsulated challenge", "length", len(eapEncoded), "type", fmt.Sprintf("%T", rp.eap.Payload))
 	err = rfc2869.EAPMessage_Set(rres, eapEncoded)
 	if err != nil {
-		log.WithError(err).Warning("failed to set EAP message")
-		sendErrorResponse(w, r)
+		l.Warn("failed to set EAP message", "error", err)
+		p.sendErrorResponse(w, r)
 		return
 	}
 	err = p.setMessageAuthenticator(rres)
 	if err != nil {
-		log.WithError(err).Warning("failed to set message authenticator")
-		sendErrorResponse(w, r)
+		l.Warn("failed to set message authenticator", "error", err)
+		p.sendErrorResponse(w, r)
 		return
 	}
 	err = w.Write(rres)
 	if err != nil {
-		log.WithError(err).Warning("failed to send response")
+		l.Warn("failed to send response", "error", err)
 	}
 }
 
 func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, parentContext *context) (*eap.Payload, error) {
+	l := p.stm.GetEAPSettings().Logger
+
 	st := stm.GetEAPState(p.state)
 	if st == nil {
-		log.Debug("Root-EAP: blank state")
+		l.Debug("Root-EAP: blank state")
 		st = protocol.BlankState(stm.GetEAPSettings())
 	}
 
@@ -112,7 +114,7 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 	}
 
 	if n, ok := pp.(*eap.Payload).Payload.(*legacy_nak.Payload); ok {
-		log.WithField("desired", n.DesiredType).Debug("Root-EAP: received NAK, trying next protocol")
+		l.Debug("Root-EAP: received NAK, trying next protocol", "desired", n.DesiredType)
 		pp.(*eap.Payload).Payload = nil
 		return next()
 	}
@@ -128,7 +130,7 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 			req:         p.r,
 			rootPayload: p.eap,
 			typeState:   st.TypeState,
-			log:         log.WithField("type", fmt.Sprintf("%T", np)).WithField("code", t),
+			log:         l.With("type", fmt.Sprintf("%T", np), "code", t),
 			settings:    stm.GetEAPSettings().ProtocolSettings[t],
 		}
 		ctx.handleInner = func(pp protocol.Payload, sm protocol.StateManager, ctx protocol.Context) (protocol.Payload, error) {
@@ -150,7 +152,7 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 	if reflect.TypeOf(pp.(*eap.Payload).Payload) == reflect.TypeOf(np) {
 		err := np.Decode(pp.(*eap.Payload).RawPayload)
 		if err != nil {
-			ctx.log.WithError(err).Warning("failed to decode payload")
+			ctx.log.Warn("failed to decode payload", "error", err)
 		}
 	}
 	payload = np.Handle(ctx)
