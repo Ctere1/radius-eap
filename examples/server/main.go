@@ -122,12 +122,12 @@ func (s *Server) GetEAPSettings() protocol.Settings {
 							ServerIdentifier: "radius-eap example",
 						},
 						gtc.TypeGTC: gtc.Settings{
-							Challenge: func(ctx protocol.Context, first bool) []byte {
-								return []byte("Password: ")
-							},
-							ValidateResponse: func(ctx protocol.Context, data []byte) protocol.Status {
-								fmt.Println(string(data))
-								return protocol.StatusSuccess
+							ChallengeHandler: func(ctx protocol.Context) (gtc.GetChallenge, gtc.ValidateResponse) {
+								return func() []byte {
+										return []byte("Enter OTP:")
+									}, func(response []byte) {
+										fmt.Printf("GTC Response: %s\n", string(response))
+									}
 							},
 						},
 					},

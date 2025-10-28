@@ -36,19 +36,19 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	}()
 	settings := ctx.ProtocolSettings().(Settings)
 	if ctx.IsProtocolStart(TypeGTC) {
-		p.st = &State{}
+		g, v := settings.ChallengeHandler(ctx)
+		p.st = &State{
+			getChallenge:     g,
+			validateResponse: v,
+		}
 		return &Payload{
-			Challenge: settings.Challenge(ctx, true),
+			Challenge: p.st.getChallenge(),
 		}
 	}
 	p.st = ctx.GetProtocolState(TypeGTC).(*State)
-	st := settings.ValidateResponse(ctx, p.raw)
-	if st != protocol.StatusUnknown {
-		ctx.EndInnerProtocol(st)
-		return &Payload{}
-	}
+	p.st.validateResponse(p.raw)
 	return &Payload{
-		Challenge: settings.Challenge(ctx, false),
+		Challenge: p.st.getChallenge(),
 	}
 }
 
