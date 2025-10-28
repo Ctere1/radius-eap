@@ -7,8 +7,8 @@ import (
 	"net"
 	"testing"
 
-	eap "beryju.io/radius-eap"
-	"beryju.io/radius-eap/protocol"
+	eap "github.com/Ctere1/radius-eap"
+	"github.com/Ctere1/radius-eap/protocol"
 	"github.com/stretchr/testify/assert"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2869"

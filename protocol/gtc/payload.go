@@ -1,7 +1,7 @@
 package gtc
 
 import (
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 )
 
 const TypeGTC protocol.Type = 6

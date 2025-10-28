@@ -5,12 +5,12 @@ import (
 	ttls "crypto/tls"
 	"testing"
 
-	eap "beryju.io/radius-eap"
-	"beryju.io/radius-eap/protocol"
-	"beryju.io/radius-eap/protocol/identity"
-	"beryju.io/radius-eap/protocol/legacy_nak"
-	"beryju.io/radius-eap/protocol/mschapv2"
-	"beryju.io/radius-eap/protocol/peap"
+	eap "github.com/Ctere1/radius-eap"
+	"github.com/Ctere1/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol/identity"
+	"github.com/Ctere1/radius-eap/protocol/legacy_nak"
+	"github.com/Ctere1/radius-eap/protocol/mschapv2"
+	"github.com/Ctere1/radius-eap/protocol/peap"
 	"github.com/stretchr/testify/assert"
 )
 

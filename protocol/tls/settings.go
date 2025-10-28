@@ -4,7 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 )
 
 type TLSConfig interface {

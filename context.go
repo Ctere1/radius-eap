@@ -3,7 +3,7 @@ package eap
 import (
 	"fmt"
 
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 	"layeh.com/radius"
 )
 

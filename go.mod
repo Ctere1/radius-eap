@@ -1,4 +1,4 @@
-module beryju.io/radius-eap
+module github.com/Ctere1/radius-eap
 
 go 1.24.3
 

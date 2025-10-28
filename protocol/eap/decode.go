@@ -3,7 +3,7 @@ package eap
 import (
 	"fmt"
 
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 )
 
 func EmptyPayload(settings protocol.Settings, t protocol.Type) (protocol.Payload, protocol.Type, error) {

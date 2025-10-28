@@ -3,7 +3,7 @@ package peap_test
 import (
 	"testing"
 
-	"beryju.io/radius-eap/protocol/peap"
+	"github.com/Ctere1/radius-eap/protocol/peap"
 	"github.com/stretchr/testify/assert"
 )
 

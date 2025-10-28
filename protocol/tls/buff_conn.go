@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 	"github.com/avast/retry-go/v4"
 )
 

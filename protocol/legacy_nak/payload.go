@@ -3,7 +3,7 @@ package legacy_nak
 import (
 	"fmt"
 
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 )
 
 const TypeLegacyNAK protocol.Type = 3

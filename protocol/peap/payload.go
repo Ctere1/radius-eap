@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
-	"beryju.io/radius-eap/protocol"
-	"beryju.io/radius-eap/protocol/eap"
-	"beryju.io/radius-eap/protocol/identity"
-	"beryju.io/radius-eap/protocol/tls"
+	"github.com/Ctere1/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol/eap"
+	"github.com/Ctere1/radius-eap/protocol/identity"
+	"github.com/Ctere1/radius-eap/protocol/tls"
 )
 
 const TypePEAP protocol.Type = 25

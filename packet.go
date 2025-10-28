@@ -1,8 +1,8 @@
 package eap
 
 import (
-	"beryju.io/radius-eap/protocol"
-	"beryju.io/radius-eap/protocol/eap"
+	"github.com/Ctere1/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol/eap"
 	"layeh.com/radius"
 )
 

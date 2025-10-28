@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"reflect"
 
-	"beryju.io/radius-eap/protocol"
-	"beryju.io/radius-eap/protocol/eap"
-	"beryju.io/radius-eap/protocol/legacy_nak"
+	"github.com/Ctere1/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol/eap"
+	"github.com/Ctere1/radius-eap/protocol/legacy_nak"
 	"github.com/gorilla/securecookie"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"

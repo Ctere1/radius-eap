@@ -3,7 +3,7 @@ package identity
 import (
 	"fmt"
 
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 )
 
 const TypeIdentity protocol.Type = 1

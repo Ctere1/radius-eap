@@ -3,7 +3,7 @@ package peap
 import (
 	"encoding/binary"
 
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 )
 
 const TypePEAPExtension protocol.Type = 33

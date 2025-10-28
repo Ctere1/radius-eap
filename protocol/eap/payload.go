@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 )
 
 const TypeEAP protocol.Type = 0

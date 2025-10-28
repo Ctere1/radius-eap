@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 )
 
 type State struct {

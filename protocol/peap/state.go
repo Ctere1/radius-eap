@@ -1,6 +1,6 @@
 package peap
 
-import "beryju.io/radius-eap/protocol"
+import "github.com/Ctere1/radius-eap/protocol"
 
 type State struct {
 	SubState map[string]*protocol.State

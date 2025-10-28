@@ -10,8 +10,8 @@ import (
 	"slices"
 	"time"
 
-	"beryju.io/radius-eap/debug"
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/debug"
+	"github.com/Ctere1/radius-eap/protocol"
 	"github.com/avast/retry-go/v4"
 	"layeh.com/radius"
 	"layeh.com/radius/vendors/microsoft"

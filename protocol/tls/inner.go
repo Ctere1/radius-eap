@@ -1,7 +1,7 @@
 package tls
 
 import (
-	"beryju.io/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol"
 )
 
 func (p *Payload) innerHandler(ctx protocol.Context) {

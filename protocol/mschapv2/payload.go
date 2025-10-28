@@ -5,9 +5,9 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"beryju.io/radius-eap/protocol"
-	"beryju.io/radius-eap/protocol/eap"
-	"beryju.io/radius-eap/protocol/peap"
+	"github.com/Ctere1/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol/eap"
+	"github.com/Ctere1/radius-eap/protocol/peap"
 	"github.com/gorilla/securecookie"
 	"layeh.com/radius"
 	"layeh.com/radius/vendors/microsoft"

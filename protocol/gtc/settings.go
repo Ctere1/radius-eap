@@ -1,6 +1,6 @@
 package gtc
 
-import "beryju.io/radius-eap/protocol"
+import "github.com/Ctere1/radius-eap/protocol"
 
 type GetChallenge func() []byte
 type ValidateResponse func(answer []byte)
