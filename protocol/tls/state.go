@@ -8,18 +8,19 @@ import (
 )
 
 type State struct {
-	RemainingChunks  [][]byte
-	HandshakeDone    bool
-	FinalStatus      protocol.Status
-	ClientHello      *tls.ClientHelloInfo
-	MPPEKey          []byte
-	TotalPayloadSize int
-	TLS              *tls.Conn
-	Conn             *BuffConn
-	Context          context.Context
-	ContextCancel    context.CancelFunc
-	HandshakeCtx     protocol.Context
-	Logger           protocol.Logger
+	RemainingChunks             [][]byte
+	HandshakeDone               bool
+	FinalStatus                 protocol.Status
+	ClientHello                 *tls.ClientHelloInfo
+	MPPEKey                     []byte
+	TotalPayloadSize            int
+	IncludeLengthInNextFragment bool
+	TLS                         *tls.Conn
+	Conn                        *BuffConn
+	Context                     context.Context
+	ContextCancel               context.CancelFunc
+	HandshakeCtx                protocol.Context
+	Logger                      protocol.Logger
 }
 
 func NewState(c protocol.Context) interface{} {

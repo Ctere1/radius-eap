@@ -93,7 +93,13 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	defer func() {
 		ctx.SetProtocolState(TypePEAP, p.st)
 	}()
-	p.settings = ctx.ProtocolSettings().(Settings)
+	settings, ok := ctx.ProtocolSettings().(Settings)
+	if !ok || settings.Config == nil {
+		ctx.Log().Error("PEAP: invalid protocol settings")
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return nil
+	}
+	p.settings = settings
 
 	rootEap := ctx.RootPayload().(*eap.Payload)
 

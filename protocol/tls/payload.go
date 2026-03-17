@@ -48,6 +48,9 @@ func (p *Payload) Offerable() bool {
 }
 
 func (p *Payload) Decode(raw []byte) error {
+	if len(raw) < 1 {
+		return errors.New("invalid TLS payload: missing flags")
+	}
 	p.Flags = Flag(raw[0])
 	raw = raw[1:]
 	if p.Flags&FlagLengthIncluded != 0 {
@@ -69,14 +72,16 @@ func (p *Payload) Encode() ([]byte, error) {
 	}
 	buff := make([]byte, len(p.Data)+l)
 	buff[0] = byte(p.Flags)
+	dataOffset := 1
 	if p.Flags&FlagLengthIncluded != 0 {
 		buff[1] = byte(p.Length >> 24)
 		buff[2] = byte(p.Length >> 16)
 		buff[3] = byte(p.Length >> 8)
 		buff[4] = byte(p.Length)
+		dataOffset = 5
 	}
 	if len(p.Data) > 0 {
-		copy(buff[5:], p.Data)
+		copy(buff[dataOffset:], p.Data)
 	}
 	return buff, nil
 }
@@ -99,14 +104,8 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		p.tlsInit(ctx)
 	} else if len(p.Data) > 0 {
 		ctx.Log().Debug("TLS: Updating buffer with new TLS data from packet")
-		if p.Flags&FlagLengthIncluded != 0 && p.st.Conn.expectedWriterByteCount == 0 {
-			ctx.Log().Debug("TLS: Expecting total bytes, will buffer", "total", p.Length)
-			p.st.Conn.expectedWriterByteCount = int(p.Length)
-		} else if p.Flags&FlagLengthIncluded != 0 {
-			ctx.Log().Debug("TLS: No length included, not buffering")
-			p.st.Conn.expectedWriterByteCount = 0
-		}
 		p.st.Conn.UpdateData(p.Data)
+		p.updateExpectedWriterByteCount(ctx)
 		if !p.st.Conn.NeedsMoreData() && !p.st.HandshakeDone {
 			// Wait for outbound data to be available
 			p.st.Conn.OutboundData()
@@ -180,18 +179,27 @@ func (p *Payload) tlsInit(ctx protocol.Context) {
 	ctx.Log().Debug("TLS: no TLS connection in state yet, starting connection")
 	p.st.Context, p.st.ContextCancel = context.WithTimeout(context.Background(), staleConnectionTimeout*time.Second)
 	p.st.Conn = NewBuffConn(p.Data, p.st.Context, ctx)
-	cfg := ctx.ProtocolSettings().(TLSConfig).TLSConfig().Clone()
+	p.updateExpectedWriterByteCount(ctx)
+	tlsSettings, ok := ctx.ProtocolSettings().(TLSConfig)
+	if !ok || tlsSettings.TLSConfig() == nil {
+		ctx.Log().Error("TLS: invalid protocol settings")
+		p.st.FinalStatus = protocol.StatusError
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return
+	}
+	cfg := tlsSettings.TLSConfig().Clone()
 
 	if klp, ok := os.LookupEnv("SSLKEYLOGFILE"); ok {
 		kl, err := os.OpenFile(klp, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 		if err != nil {
-			panic(err)
+			ctx.Log().Warn("TLS: failed to open SSLKEYLOGFILE", "path", klp, "error", err)
+		} else {
+			cfg.KeyLogWriter = kl
 		}
-		cfg.KeyLogWriter = kl
 	}
 
 	cfg.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-		ctx.Log().Debug("TLS: ClientHello", "ch", chi)
+		ctx.Log().Debug("TLS: ClientHello received", "server_name", chi.ServerName, "remote_addr", chi.Conn.RemoteAddr())
 		p.st.ClientHello = chi
 		return nil, nil
 	}
@@ -236,7 +244,14 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 	p.st.MPPEKey = ksm
 	p.st.HandshakeDone = true
 	if p.Inner == nil {
-		p.st.FinalStatus = ctx.ProtocolSettings().(Settings).HandshakeSuccessful(p.st.HandshakeCtx, cs.PeerCertificates)
+		settings, ok := ctx.ProtocolSettings().(Settings)
+		if !ok || settings.HandshakeSuccessful == nil {
+			ctx.Log().Error("TLS: missing handshake callback in protocol settings")
+			p.st.FinalStatus = protocol.StatusError
+			ctx.EndInnerProtocol(protocol.StatusError)
+			return
+		}
+		p.st.FinalStatus = settings.HandshakeSuccessful(p.st.HandshakeCtx, cs.PeerCertificates)
 	}
 }
 
@@ -245,6 +260,7 @@ func (p *Payload) startChunkedTransfer(data []byte) *Payload {
 		p.st.Logger.Debug("TLS: Data needs to be chunked", "length", len(data))
 		p.st.RemainingChunks = append(p.st.RemainingChunks, slices.Collect(slices.Chunk(data, maxChunkSize))...)
 		p.st.TotalPayloadSize = len(data)
+		p.st.IncludeLengthInNextFragment = true
 		return p.sendNextChunk()
 	}
 	p.st.Logger.Debug("TLS: Sending data un-chunked", "length", len(data))
@@ -258,18 +274,23 @@ func (p *Payload) startChunkedTransfer(data []byte) *Payload {
 
 func (p *Payload) sendNextChunk() *Payload {
 	nextChunk := p.st.RemainingChunks[0]
-	p.st.Logger.Debug("TLS: Sending next chunk", "raw", debug.FormatBytes(nextChunk))
+	p.st.Logger.Debug("TLS: Sending next chunk", "preview", debug.FormatBytes(nextChunk), "length", len(nextChunk))
 	p.st.RemainingChunks = p.st.RemainingChunks[1:]
-	flags := FlagLengthIncluded
+	flags := FlagNone
+	if p.st.IncludeLengthInNextFragment {
+		flags |= FlagLengthIncluded
+		p.st.IncludeLengthInNextFragment = false
+	}
 	if p.st.HasMore() {
 		p.st.Logger.Debug("TLS: More chunks left", "chunks", len(p.st.RemainingChunks))
-		flags += FlagMoreFragments
+		flags |= FlagMoreFragments
 	} else {
 		// Last chunk, reset the connection buffers and pending payload size
 		defer func() {
 			p.st.Logger.Debug("TLS: Sent last chunk")
 			p.st.Conn.writer.Reset()
 			p.st.TotalPayloadSize = 0
+			p.st.IncludeLengthInNextFragment = false
 		}()
 	}
 	p.st.Logger.Debug("TLS: Total payload size", "length", p.st.TotalPayloadSize)
@@ -277,6 +298,16 @@ func (p *Payload) sendNextChunk() *Payload {
 		Flags:  flags,
 		Length: uint32(p.st.TotalPayloadSize),
 		Data:   nextChunk,
+	}
+}
+
+func (p *Payload) updateExpectedWriterByteCount(ctx protocol.Context) {
+	if p.Flags&FlagLengthIncluded == 0 || p.st == nil || p.st.Conn == nil {
+		return
+	}
+	p.st.Conn.SetExpectedWriterByteCount(int(p.Length))
+	if p.st.Conn.expectedWriterByteCount > 0 {
+		ctx.Log().Debug("TLS: Expecting total bytes, will buffer", "total", p.Length)
 	}
 }
 

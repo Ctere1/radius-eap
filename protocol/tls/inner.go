@@ -1,21 +1,33 @@
 package tls
 
 import (
+	"bytes"
+	"errors"
+	"io"
+
 	"github.com/Ctere1/radius-eap/protocol"
 )
 
 func (p *Payload) innerHandler(ctx protocol.Context) {
-	d := make([]byte, 1024)
+	var d []byte
 	if !ctx.IsProtocolStart(p.Inner.Type()) {
 		ctx.Log().Debug("TLS: Reading from TLS for inner protocol")
-		n, err := p.st.TLS.Read(d)
-		if err != nil {
-			ctx.Log().Warn("TLS: Failed to read from TLS connection", "error", err)
+		var readErr error
+		d, readErr = readInnerTLSRecord(p.st.TLS)
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				ctx.Log().Warn("TLS: inner protocol stream closed")
+			} else {
+				ctx.Log().Warn("TLS: Failed to read from TLS connection", "error", readErr)
+			}
 			ctx.EndInnerProtocol(protocol.StatusError)
 			return
 		}
-		// Truncate data to the size we read
-		d = d[:n]
+		if len(d) == 0 {
+			ctx.Log().Warn("TLS: inner protocol payload was empty")
+			ctx.EndInnerProtocol(protocol.StatusError)
+			return
+		}
 	}
 	err := p.Inner.Decode(d)
 	if err != nil {
@@ -36,4 +48,16 @@ func (p *Payload) innerHandler(ctx protocol.Context) {
 		ctx.EndInnerProtocol(protocol.StatusError)
 		return
 	}
+}
+
+func readInnerTLSRecord(r io.Reader) ([]byte, error) {
+	buf := make([]byte, 4096)
+	n, err := r.Read(buf)
+	if n > 0 {
+		return bytes.Clone(buf[:n]), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return nil, io.ErrNoProgress
 }

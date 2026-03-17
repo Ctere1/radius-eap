@@ -33,15 +33,23 @@ func (p *Payload) Offerable() bool {
 }
 
 func (p *Payload) Decode(raw []byte) error {
+	if len(raw) < 4 {
+		return fmt.Errorf("invalid EAP packet length: %d", len(raw))
+	}
 	p.Code = protocol.Code(raw[0])
 	p.ID = raw[1]
 	p.Length = binary.BigEndian.Uint16(raw[2:])
 	if p.Length != uint16(len(raw)) {
 		return fmt.Errorf("mismatched packet length; got %d, expected %d", p.Length, uint16(len(raw)))
 	}
-	if len(raw) > 4 && (p.Code == protocol.CodeRequest || p.Code == protocol.CodeResponse) {
-		p.MsgType = protocol.Type(raw[4])
+	if p.Code != protocol.CodeRequest && p.Code != protocol.CodeResponse {
+		p.RawPayload = raw[4:]
+		return nil
 	}
+	if len(raw) < 5 {
+		return fmt.Errorf("EAP packet type missing for code %d", p.Code)
+	}
+	p.MsgType = protocol.Type(raw[4])
 	p.RawPayload = raw[5:]
 	if p.Payload == nil {
 		pp, _, err := EmptyPayload(p.Settings, p.MsgType)
@@ -50,11 +58,7 @@ func (p *Payload) Decode(raw []byte) error {
 		}
 		p.Payload = pp
 	}
-	err := p.Payload.Decode(raw[5:])
-	if err != nil {
-		return err
-	}
-	return nil
+	return p.Payload.Decode(p.RawPayload)
 }
 
 func (p *Payload) Encode() ([]byte, error) {

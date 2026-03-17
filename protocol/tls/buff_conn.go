@@ -63,6 +63,14 @@ func (conn *BuffConn) UpdateData(data []byte) {
 	conn.log.Debug("TLS(buffcon): Appending new data %d (total %d, expecting %d)", len(data), conn.writtenByteCount, conn.expectedWriterByteCount)
 }
 
+func (conn *BuffConn) SetExpectedWriterByteCount(total int) {
+	if total <= 0 || conn.writtenByteCount >= total {
+		conn.expectedWriterByteCount = 0
+		return
+	}
+	conn.expectedWriterByteCount = total
+}
+
 func (conn BuffConn) NeedsMoreData() bool {
 	if conn.expectedWriterByteCount > 0 {
 		return conn.reader.Len() < int(conn.expectedWriterByteCount)

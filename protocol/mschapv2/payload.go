@@ -3,6 +3,7 @@ package mschapv2
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"github.com/Ctere1/radius-eap/protocol"
@@ -53,23 +54,35 @@ func (p *Payload) Type() protocol.Type {
 }
 
 func (p *Payload) Decode(raw []byte) error {
+	if len(raw) < 1 {
+		return errors.New("MSCHAPv2: payload too short")
+	}
 	p.OpCode = OpCode(raw[0])
 	if p.OpCode == OpSuccess {
+		if len(raw) != 1 {
+			return fmt.Errorf("MSCHAPv2: invalid success payload length: %d", len(raw))
+		}
 		return nil
+	}
+	if len(raw) < 5 {
+		return fmt.Errorf("MSCHAPv2: payload too short: %d", len(raw))
 	}
 	// TODO: Validate against root EAP packet
 	p.MSCHAPv2ID = raw[1]
 	p.MSLength = binary.BigEndian.Uint16(raw[2:])
+	if int(p.MSLength) != len(raw) {
+		return fmt.Errorf("MSCHAPv2: incorrect MS-Length: %d, should be %d", p.MSLength, len(raw))
+	}
 
 	p.ValueSize = raw[4]
 	if p.ValueSize != responseValueSize {
 		return fmt.Errorf("MSCHAPv2: incorrect value size: %d", p.ValueSize)
 	}
+	if len(raw) < 5+int(p.ValueSize) {
+		return fmt.Errorf("MSCHAPv2: payload too short for response value: %d", len(raw))
+	}
 	p.Response = raw[5 : p.ValueSize+5]
 	p.Name = raw[5+p.ValueSize:]
-	if int(p.MSLength) != len(raw) {
-		return fmt.Errorf("MSCHAPv2: incorrect MS-Length: %d, should be %d", p.MSLength, len(raw))
-	}
 	return nil
 }
 
@@ -94,7 +107,12 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	}()
 
 	rootEap := ctx.RootPayload().(*eap.Payload)
-	settings := ctx.ProtocolSettings().(Settings)
+	settings, ok := ctx.ProtocolSettings().(Settings)
+	if !ok || settings.AuthenticateRequest == nil {
+		ctx.Log().Error("MSCHAPv2: invalid protocol settings")
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return nil
+	}
 
 	if ctx.IsProtocolStart(TypeMSCHAPv2) {
 		ctx.Log().Debug("MSCHAPv2: Empty state, starting")

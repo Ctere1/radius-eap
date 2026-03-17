@@ -5,6 +5,7 @@ import (
 	ttls "crypto/tls"
 	"errors"
 	"net"
+	"path/filepath"
 	"testing"
 
 	eap "github.com/Ctere1/radius-eap"
@@ -22,6 +23,10 @@ type Server struct {
 }
 
 func NewTestServer(t *testing.T) *Server {
+	t.Helper()
+	requireTestAsset(t, filepath.Join("certs", "cert_server.pem"))
+	requireTestAsset(t, filepath.Join("certs", "cert_server.key"))
+
 	s := &Server{
 		eapState: map[string]*protocol.State{},
 	}

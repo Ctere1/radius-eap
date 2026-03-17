@@ -2,6 +2,7 @@ package peap
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/Ctere1/radius-eap/protocol"
 )
@@ -19,14 +20,20 @@ func (ep *ExtensionPayload) Decode(raw []byte) error {
 		if len(raw[offset:]) < 4 {
 			return nil
 		}
-		len := binary.BigEndian.Uint16(raw[offset+2:offset+2+2]) + ExtensionHeaderSize
+		avpLen := binary.BigEndian.Uint16(raw[offset+2:offset+2+2]) + ExtensionHeaderSize
+		if avpLen < ExtensionHeaderSize {
+			return fmt.Errorf("PEAP-Extension: invalid AVP length: %d", avpLen)
+		}
+		if offset+int(avpLen) > len(raw) {
+			return fmt.Errorf("PEAP-Extension: AVP length %d exceeds remaining payload %d", avpLen, len(raw)-offset)
+		}
 		avp := &ExtensionAVP{}
-		err := avp.Decode(raw[offset : offset+int(len)])
+		err := avp.Decode(raw[offset : offset+int(avpLen)])
 		if err != nil {
 			return err
 		}
 		ep.AVPs = append(ep.AVPs, *avp)
-		offset = offset + int(len)
+		offset = offset + int(avpLen)
 	}
 }
 

@@ -12,6 +12,9 @@ type Response struct {
 }
 
 func ParseResponse(raw []byte) (*Response, error) {
+	if len(raw) != responseValueSize {
+		return nil, errors.New("MSCHAPv2: invalid response length")
+	}
 	res := &Response{}
 	res.Challenge = raw[:challengeValueSize]
 	if !bytes.Equal(raw[challengeValueSize:challengeValueSize+responseReservedSize], make([]byte, 8)) {

@@ -34,9 +34,19 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	defer func() {
 		ctx.SetProtocolState(TypeGTC, p.st)
 	}()
-	settings := ctx.ProtocolSettings().(Settings)
+	settings, ok := ctx.ProtocolSettings().(Settings)
+	if !ok || settings.ChallengeHandler == nil {
+		ctx.Log().Error("GTC: invalid protocol settings")
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return nil
+	}
 	if ctx.IsProtocolStart(TypeGTC) {
 		g, v := settings.ChallengeHandler(ctx)
+		if g == nil || v == nil {
+			ctx.Log().Error("GTC: challenge handler returned nil callbacks")
+			ctx.EndInnerProtocol(protocol.StatusError)
+			return nil
+		}
 		p.st = &State{
 			getChallenge:     g,
 			validateResponse: v,
