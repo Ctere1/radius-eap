@@ -26,9 +26,10 @@ type BuffConn struct {
 
 func NewBuffConn(initialData []byte, ctx context.Context, cctx protocol.Context) *BuffConn {
 	c := &BuffConn{
-		reader: bytes.NewBuffer(initialData),
-		writer: bytes.NewBuffer([]byte{}),
-		ctx:    ctx,
+		reader:           bytes.NewBuffer(initialData),
+		writer:           bytes.NewBuffer([]byte{}),
+		ctx:              ctx,
+		writtenByteCount: len(initialData),
 		retryOptions: []retry.Option{
 			retry.Context(ctx),
 			retry.Delay(10 * time.Microsecond),
@@ -59,21 +60,32 @@ func (conn BuffConn) OutboundData() []byte {
 
 func (conn *BuffConn) UpdateData(data []byte) {
 	conn.reader.Write(data)
-	conn.writtenByteCount += len(data)
+	if conn.expectedWriterByteCount > 0 {
+		conn.writtenByteCount += len(data)
+	}
 	conn.log.Debug("TLS(buffcon): Appending new data %d (total %d, expecting %d)", len(data), conn.writtenByteCount, conn.expectedWriterByteCount)
 }
 
-func (conn *BuffConn) SetExpectedWriterByteCount(total int) {
-	if total <= 0 || conn.writtenByteCount >= total {
+func (conn *BuffConn) SetExpectedWriterByteCount(total int, initialReceived int) {
+	if total <= 0 {
 		conn.expectedWriterByteCount = 0
+		conn.writtenByteCount = 0
 		return
 	}
+
 	conn.expectedWriterByteCount = total
+	conn.writtenByteCount = initialReceived
+	if conn.writtenByteCount >= total {
+		conn.expectedWriterByteCount = 0
+		conn.writtenByteCount = 0
+		return
+	}
+
 }
 
 func (conn BuffConn) NeedsMoreData() bool {
 	if conn.expectedWriterByteCount > 0 {
-		return conn.reader.Len() < int(conn.expectedWriterByteCount)
+		return conn.writtenByteCount < int(conn.expectedWriterByteCount)
 	}
 	return false
 }
@@ -88,15 +100,11 @@ func (conn *BuffConn) Read(p []byte) (int, error) {
 			if conn.expectedWriterByteCount > 0 {
 				// If we're waiting for more data, we need to stall
 				if conn.writtenByteCount < int(conn.expectedWriterByteCount) {
-					conn.log.Debug("TLS(buffcon): Attempted read %d while waiting for bytes %d, stalling...", len(p), conn.expectedWriterByteCount-conn.reader.Len())
+					conn.log.Debug("TLS(buffcon): Attempted read %d while waiting for bytes %d, stalling...", len(p), conn.expectedWriterByteCount-conn.writtenByteCount)
 					return 0, errStall
 				}
-				// If we have all the data, reset how much we're expecting to still get
-				if conn.writtenByteCount == int(conn.expectedWriterByteCount) {
-					conn.expectedWriterByteCount = 0
-				}
-			}
-			if conn.reader.Len() == 0 {
+				// The current fragment series is complete; future series must start a new count.
+				conn.expectedWriterByteCount = 0
 				conn.writtenByteCount = 0
 			}
 			n, err := conn.reader.Read(p)

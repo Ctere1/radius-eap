@@ -123,15 +123,30 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		return p.sendNextChunk()
 	}
 	if p.st.Conn.writer.Len() == 0 && p.st.HandshakeDone {
+		if p.Inner == nil && p.failOnUnexpectedPostHandshakeClientData(ctx) {
+			return nil
+		}
 		if p.Inner != nil {
 			ctx.Log().Debug("TLS: Handshake is done, delegating to inner protocol")
 			p.innerHandler(ctx)
 			return p.startChunkedTransfer(p.st.Conn.OutboundData())
 		}
 		defer p.st.ContextCancel()
+		ctx.Log().Debug(
+			"TLS: Handshake done, awaiting final status",
+			"final_status", p.st.FinalStatus,
+			"context_err", p.st.Context.Err(),
+			"writer_len", p.st.Conn.writer.Len(),
+			"reader_len", p.st.Conn.reader.Len(),
+		)
 		// If we don't have a final status from the handshake finished function, stall for time
-		pst, _ := retry.DoWithData(
+		pst, err := retry.DoWithData(
 			func() (protocol.Status, error) {
+				ctx.Log().Debug(
+					"TLS: polling final status",
+					"final_status", p.st.FinalStatus,
+					"context_err", p.st.Context.Err(),
+				)
 				if p.st.FinalStatus == protocol.StatusUnknown {
 					return p.st.FinalStatus, errStall
 				}
@@ -143,10 +158,58 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 			retry.MaxDelay(100*time.Millisecond),
 			retry.Attempts(0),
 		)
+		if err != nil || pst == protocol.StatusUnknown {
+			ctx.Log().Warn(
+				"TLS: final status unresolved after handshake; converting to error to avoid invalid bare EAP request",
+				"final_status", pst,
+				"retry_error", err,
+				"context_err", p.st.Context.Err(),
+				"writer_len", p.st.Conn.writer.Len(),
+				"reader_len", p.st.Conn.reader.Len(),
+			)
+			pst = protocol.StatusError
+			p.st.FinalStatus = protocol.StatusError
+		}
 		ctx.EndInnerProtocol(pst)
 		return nil
 	}
 	return p.startChunkedTransfer(p.st.Conn.OutboundData())
+}
+
+func (p *Payload) failOnUnexpectedPostHandshakeClientData(ctx protocol.Context) bool {
+	if p.st == nil || p.st.Conn == nil {
+		return false
+	}
+
+	unread := p.st.Conn.reader.Bytes()
+	if len(unread) == 0 {
+		return false
+	}
+
+	logArgs := []any{"length", len(unread), "preview", debug.FormatBytes(unread)}
+	if hasTLSAlertRecord(unread) {
+		ctx.Log().Warn("TLS: client sent post-handshake TLS alert; rejecting exchange", logArgs...)
+		p.st.FinalStatus = protocol.StatusError
+		if p.st.ContextCancel != nil {
+			p.st.ContextCancel()
+		}
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return true
+	}
+
+	if hasOnlyTLSApplicationDataRecords(unread) {
+		ctx.Log().Warn("TLS: tolerating benign post-handshake client TLS application data", logArgs...)
+		p.st.Conn.reader.Reset()
+		return false
+	}
+
+	ctx.Log().Warn("TLS: unexpected unread post-handshake client TLS data; rejecting exchange", logArgs...)
+	p.st.FinalStatus = protocol.StatusError
+	if p.st.ContextCancel != nil {
+		p.st.ContextCancel()
+	}
+	ctx.EndInnerProtocol(protocol.StatusError)
+	return true
 }
 
 func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error {
@@ -170,6 +233,12 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	}
 	err = microsoft.MSMPPESendKey_Set(r, p.st.MPPEKey[64:64+32])
 	if err != nil {
+		return err
+	}
+	if err = microsoft.MSMPPEEncryptionPolicy_Set(r, microsoft.MSMPPEEncryptionPolicy_Value_EncryptionRequired); err != nil {
+		return err
+	}
+	if err = microsoft.MSMPPEEncryptionTypes_Set(r, microsoft.MSMPPEEncryptionTypes_Value_RC4128bitAllowed); err != nil {
 		return err
 	}
 	return p.st.HandshakeCtx.ModifyRADIUSResponse(r, q)
@@ -305,10 +374,43 @@ func (p *Payload) updateExpectedWriterByteCount(ctx protocol.Context) {
 	if p.Flags&FlagLengthIncluded == 0 || p.st == nil || p.st.Conn == nil {
 		return
 	}
-	p.st.Conn.SetExpectedWriterByteCount(int(p.Length))
+	p.st.Conn.SetExpectedWriterByteCount(int(p.Length), len(p.Data))
 	if p.st.Conn.expectedWriterByteCount > 0 {
 		ctx.Log().Debug("TLS: Expecting total bytes, will buffer", "total", p.Length)
 	}
+}
+
+func hasTLSAlertRecord(data []byte) bool {
+	for len(data) >= 5 {
+		recordLength := int(binary.BigEndian.Uint16(data[3:5]))
+		totalLength := 5 + recordLength
+		if len(data) < totalLength {
+			return false
+		}
+		if data[0] == 0x15 {
+			return true
+		}
+		data = data[totalLength:]
+	}
+	return false
+}
+
+func hasOnlyTLSApplicationDataRecords(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	for len(data) >= 5 {
+		recordLength := int(binary.BigEndian.Uint16(data[3:5]))
+		totalLength := 5 + recordLength
+		if len(data) < totalLength {
+			return false
+		}
+		if data[0] != 0x17 {
+			return false
+		}
+		data = data[totalLength:]
+	}
+	return len(data) == 0
 }
 
 func (p *Payload) String() string {
