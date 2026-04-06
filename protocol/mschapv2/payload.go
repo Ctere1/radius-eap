@@ -108,7 +108,7 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 
 	rootEap := ctx.RootPayload().(*eap.Payload)
 	settings, ok := ctx.ProtocolSettings().(Settings)
-	if !ok || settings.AuthenticateRequest == nil {
+	if !ok || (settings.AuthenticateRequest == nil && settings.AuthenticateRequestWithContext == nil) {
 		ctx.Log().Error("MSCHAPv2: invalid protocol settings")
 		ctx.EndInnerProtocol(protocol.StatusError)
 		return nil
@@ -140,12 +140,13 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 			return nil
 		}
 		p.st.PeerChallenge = res.Challenge
-		auth, err := settings.AuthenticateRequest(AuthRequest{
+		authReq := AuthRequest{
 			Challenge:     p.st.Challenge,
 			PeerChallenge: p.st.PeerChallenge,
-		})
-		if err != nil {
-			ctx.Log().Warn("MSCHAPv2: failed to check password", "error", err)
+		}
+		auth, authErr := authenticateRequest(ctx, settings, authReq)
+		if authErr != nil {
+			ctx.Log().Warn("MSCHAPv2: failed to check password", "error", authErr)
 			return nil
 		}
 		if !bytes.Equal(auth.NTResponse, res.NTResponse) {
@@ -178,6 +179,13 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		return &Payload{}
 	}
 	return response
+}
+
+func authenticateRequest(ctx protocol.Context, settings Settings, authReq AuthRequest) (*AuthResponse, error) {
+	if settings.AuthenticateRequestWithContext != nil {
+		return settings.AuthenticateRequestWithContext(ctx, authReq)
+	}
+	return settings.AuthenticateRequest(authReq)
 }
 
 func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error {

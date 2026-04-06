@@ -1,13 +1,18 @@
 package mschapv2
 
 import (
+	"github.com/Ctere1/radius-eap/protocol"
 	"layeh.com/radius/rfc2759"
 	"layeh.com/radius/rfc3079"
 )
 
 type Settings struct {
 	AuthenticateRequest func(req AuthRequest) (*AuthResponse, error)
-	ServerIdentifier    string
+	// AuthenticateRequestWithContext is the preferred hook when the caller needs
+	// request/session-aware policy decisions. AuthenticateRequest remains
+	// available for generic consumers that only need the challenge material.
+	AuthenticateRequestWithContext func(ctx protocol.Context, req AuthRequest) (*AuthResponse, error)
+	ServerIdentifier               string
 }
 
 type AuthRequest struct {

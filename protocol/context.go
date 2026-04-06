@@ -24,6 +24,7 @@ type Logger interface {
 type Context interface {
 	Packet() *radius.Request
 	RootPayload() Payload
+	State() string
 
 	ProtocolSettings() interface{}
 

@@ -63,6 +63,8 @@ func (t testContext) Inner(protocol.Payload, protocol.Type) protocol.Context { r
 
 func (t testContext) EndInnerProtocol(protocol.Status) {}
 
+func (t testContext) State() string { return "" }
+
 func (t testContext) Log() protocol.Logger { return t.log }
 
 func TestPayloadEncodeWithoutLengthIncludedCopiesData(t *testing.T) {

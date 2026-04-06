@@ -10,6 +10,7 @@ import (
 type context struct {
 	req         *radius.Request
 	rootPayload protocol.Payload
+	state       string
 	typeState   map[protocol.Type]any
 	log         protocol.Logger
 	settings    interface{}
@@ -21,6 +22,7 @@ type context struct {
 
 func (ctx *context) RootPayload() protocol.Payload            { return ctx.rootPayload }
 func (ctx *context) Packet() *radius.Request                  { return ctx.req }
+func (ctx *context) State() string                            { return ctx.state }
 func (ctx *context) ProtocolSettings() any                    { return ctx.settings }
 func (ctx *context) GetProtocolState(p protocol.Type) any     { return ctx.typeState[p] }
 func (ctx *context) SetProtocolState(p protocol.Type, st any) { ctx.typeState[p] = st }
@@ -48,6 +50,7 @@ func (ctx *context) Inner(p protocol.Payload, t protocol.Type) protocol.Context 
 	nctx := &context{
 		req:         ctx.req,
 		rootPayload: ctx.rootPayload,
+		state:       ctx.state,
 		typeState:   ctx.typeState,
 		log:         ctx.log.With("type", fmt.Sprintf("%T", p), "code", t),
 		settings:    ctx.settings,

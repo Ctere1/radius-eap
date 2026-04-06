@@ -3,6 +3,7 @@ package tls
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -257,6 +258,8 @@ func (p *Payload) tlsInit(ctx protocol.Context) {
 		return
 	}
 	cfg := tlsSettings.TLSConfig().Clone()
+	settings, _ := ctx.ProtocolSettings().(Settings)
+	applyContextTLSHooks(cfg, ctx, settings)
 
 	if klp, ok := os.LookupEnv("SSLKEYLOGFILE"); ok {
 		kl, err := os.OpenFile(klp, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
@@ -285,6 +288,49 @@ func (p *Payload) tlsInit(ctx protocol.Context) {
 		ctx.Log().Debug("TLS: handshake done")
 		p.tlsHandshakeFinished(ctx)
 	}()
+}
+
+func applyContextTLSHooks(cfg *tls.Config, ctx protocol.Context, settings Settings) {
+	if cfg == nil {
+		return
+	}
+
+	if settings.VerifyPeerCertificate != nil {
+		cfg.VerifyPeerCertificate = chainVerifyPeerCertificate(cfg.VerifyPeerCertificate, ctx, settings.VerifyPeerCertificate)
+	}
+	if settings.VerifyConnection != nil {
+		cfg.VerifyConnection = chainVerifyConnection(cfg.VerifyConnection, ctx, settings.VerifyConnection)
+	}
+}
+
+func chainVerifyPeerCertificate(
+	original func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error,
+	ctx protocol.Context,
+	withContext func(ctx protocol.Context, rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error,
+) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if original != nil {
+			if err := original(rawCerts, verifiedChains); err != nil {
+				return err
+			}
+		}
+		return withContext(ctx, rawCerts, verifiedChains)
+	}
+}
+
+func chainVerifyConnection(
+	original func(cs tls.ConnectionState) error,
+	ctx protocol.Context,
+	withContext func(ctx protocol.Context, cs tls.ConnectionState) error,
+) func(cs tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		if original != nil {
+			if err := original(cs); err != nil {
+				return err
+			}
+		}
+		return withContext(ctx, cs)
+	}
 }
 
 func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
