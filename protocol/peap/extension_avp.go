@@ -39,6 +39,7 @@ func (eavp *ExtensionAVP) Decode(raw []byte) error {
 	if eavp.Length != uint16(len(val)) {
 		return fmt.Errorf("PEAP-Extension: Invalid length: %d, should be %d", eavp.Length, len(val))
 	}
+	eavp.Value = append([]byte(nil), val...)
 	return nil
 }
 

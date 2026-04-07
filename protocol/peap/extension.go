@@ -13,6 +13,11 @@ type ExtensionPayload struct {
 	AVPs []ExtensionAVP
 }
 
+const (
+	ResultStatusSuccess uint16 = 1
+	ResultStatusFailure uint16 = 2
+)
+
 func (ep *ExtensionPayload) Decode(raw []byte) error {
 	ep.AVPs = []ExtensionAVP{}
 	offset := 0
@@ -47,6 +52,26 @@ func (ep *ExtensionPayload) Encode() ([]byte, error) {
 
 func (ep *ExtensionPayload) Handle(protocol.Context) protocol.Payload {
 	return nil
+}
+
+func (ep *ExtensionPayload) ResultStatus() (uint16, bool) {
+	found := false
+	var status uint16
+	for _, avp := range ep.AVPs {
+		if avp.Type != AVPAckResult || !avp.Mandatory || len(avp.Value) != 2 {
+			continue
+		}
+		next := binary.BigEndian.Uint16(avp.Value)
+		if !found {
+			found = true
+			status = next
+			continue
+		}
+		if status != next {
+			return 0, false
+		}
+	}
+	return status, found
 }
 
 func (ep *ExtensionPayload) Offerable() bool {

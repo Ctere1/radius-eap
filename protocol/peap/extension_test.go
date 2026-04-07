@@ -19,3 +19,18 @@ func TestExtensionDecodeRejectsOverlongAVP(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds remaining payload")
 }
+
+func TestExtensionAVPDecodePreservesValue(t *testing.T) {
+	avp := &ExtensionAVP{}
+
+	err := avp.Decode([]byte{
+		0x80, 0x03,
+		0x00, 0x02,
+		0x00, 0x01,
+	})
+
+	require.NoError(t, err)
+	assert.True(t, avp.Mandatory)
+	assert.Equal(t, AVPAckResult, avp.Type)
+	assert.Equal(t, []byte{0x00, 0x01}, avp.Value)
+}

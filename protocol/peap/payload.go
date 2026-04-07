@@ -128,6 +128,27 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	p.eap = ep
 	ctx.Log().Debug("PEAP: Decoded inner EAP", "type", ep.String())
 
+	if p.st.AwaitingResultAVPAck {
+		ext, ok := ep.Payload.(*ExtensionPayload)
+		if !ok {
+			ctx.Log().Warn("PEAP: expected protected Result AVP response before finishing inner exchange")
+			p.st.AwaitingResultAVPAck = false
+			ctx.EndInnerProtocol(protocol.StatusError)
+			return nil
+		}
+		status, ok := ext.ResultStatus()
+		if !ok || status != ResultStatusSuccess {
+			ctx.Log().Warn("PEAP: invalid protected Result AVP response", "status", status, "ok", ok)
+			p.st.AwaitingResultAVPAck = false
+			ctx.EndInnerProtocol(protocol.StatusError)
+			return nil
+		}
+		p.st.AwaitingResultAVPAck = false
+		ctx.Log().Debug("PEAP: protected Result AVP acknowledged")
+		ctx.EndInnerProtocol(protocol.StatusSuccess)
+		return nil
+	}
+
 	res, err := ctx.HandleInnerEAP(ep, p)
 	if err != nil {
 		ctx.Log().Warn("PEAP: failed to handle inner EAP", "error", err)
@@ -136,7 +157,10 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	// Normal payloads need to be wrapped in PEAP to use the correct encoding (see Encode() above)
 	// Extension payloads handle encoding differently
 	pres := res.(*eap.Payload)
-	if _, ok := pres.Payload.(*ExtensionPayload); ok {
+	if ext, ok := pres.Payload.(*ExtensionPayload); ok {
+		if status, ok := ext.ResultStatus(); ok && status == ResultStatusSuccess {
+			p.st.AwaitingResultAVPAck = true
+		}
 		// HandleInnerEAP will set the MsgType to the PEAP type, however we need to override that
 		pres.MsgType = TypePEAPExtension
 		ctx.Log().Debug("PEAP: Encoding response as extension")
