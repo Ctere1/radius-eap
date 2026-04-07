@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"layeh.com/radius"
+	"layeh.com/radius/vendors/microsoft"
 )
 
 type testContext struct {
@@ -28,6 +29,7 @@ type testContext struct {
 	packet        *radius.Request
 	protocolState map[protocol.Type]interface{}
 	endStatus     protocol.Status
+	modify        func(r, q *radius.Packet) error
 }
 
 func (t testContext) Packet() *radius.Request { return t.packet }
@@ -52,7 +54,12 @@ func (t testContext) SetProtocolState(tp protocol.Type, state interface{}) {
 
 func (t testContext) IsProtocolStart(protocol.Type) bool { return false }
 
-func (t testContext) ModifyRADIUSResponse(r, q *radius.Packet) error { return nil }
+func (t testContext) ModifyRADIUSResponse(r, q *radius.Packet) error {
+	if t.modify != nil {
+		return t.modify(r, q)
+	}
+	return nil
+}
 
 func (t testContext) AddResponseModifier(func(r, q *radius.Packet) error) {}
 
@@ -301,6 +308,35 @@ func TestOutboundPayload_HandshakeFailureWithBufferedAlertReturnsNil(t *testing.
 	got := payload.outboundPayload(protoCtx)
 	assert.Nil(t, got)
 	assert.Equal(t, protocol.StatusError, protoCtx.recordedStatus())
+}
+
+func TestModifyRADIUSResponseAddsMPPEKeysWithoutLegacyAttributesByDefault(t *testing.T) {
+	req := radius.New(radius.CodeAccessRequest, []byte("secret"))
+	res := radius.New(radius.CodeAccessAccept, []byte("secret"))
+	res.Authenticator = req.Authenticator
+	keyMaterial := make([]byte, 128)
+	for i := range keyMaterial {
+		keyMaterial[i] = byte(i)
+	}
+
+	payload := &Payload{
+		st: &State{
+			MPPEKey: keyMaterial,
+			HandshakeCtx: testContext{
+				log:    eap.DefaultLogger(),
+				modify: func(r, q *radius.Packet) error { return nil },
+			},
+			Logger: eap.DefaultLogger(),
+		},
+	}
+	payload.st.SetHandshakeDone(true)
+
+	require.NoError(t, payload.ModifyRADIUSResponse(res, req))
+
+	assert.Equal(t, keyMaterial[:32], microsoft.MSMPPERecvKey_Get(res, req))
+	assert.Equal(t, keyMaterial[64:96], microsoft.MSMPPESendKey_Get(res, req))
+	assert.Equal(t, microsoft.MSMPPEEncryptionPolicy(0), microsoft.MSMPPEEncryptionPolicy_Get(res))
+	assert.Equal(t, microsoft.MSMPPEEncryptionTypes(0), microsoft.MSMPPEEncryptionTypes_Get(res))
 }
 
 func newMutualTLSPair(t *testing.T, version uint16) (*tls.Conn, *tls.Conn) {

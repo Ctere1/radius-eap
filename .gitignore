@@ -1,2 +1,4 @@
 tests/certs/**
 coverage.*
+
+.DS_Store

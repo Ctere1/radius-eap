@@ -225,7 +225,7 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 		return nil
 	}
 	p.st.Logger.Debug("TLS: Adding MPPE Keys")
-	// TLS overrides other protocols' MPPE keys
+	// TLS overrides other protocols' MPPE keys.
 	if len(microsoft.MSMPPERecvKey_Get(r, q)) > 0 {
 		microsoft.MSMPPERecvKey_Del(r)
 	}
@@ -238,12 +238,6 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	}
 	err = microsoft.MSMPPESendKey_Set(r, p.st.MPPEKey[64:64+32])
 	if err != nil {
-		return err
-	}
-	if err = microsoft.MSMPPEEncryptionPolicy_Set(r, microsoft.MSMPPEEncryptionPolicy_Value_EncryptionRequired); err != nil {
-		return err
-	}
-	if err = microsoft.MSMPPEEncryptionTypes_Set(r, microsoft.MSMPPEEncryptionTypes_Value_RC4128bitAllowed); err != nil {
 		return err
 	}
 	return p.st.HandshakeCtx.ModifyRADIUSResponse(r, q)
@@ -368,7 +362,10 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 	ksm, err := cs.ExportKeyingMaterial(label, context, 64+64)
 	if err != nil {
 		ctx.Log().Warn("failed to export keying material", "error", err)
-		p.st.ContextCancel()
+		if p.st.ContextCancel != nil {
+			p.st.ContextCancel()
+		}
+		p.st.SetFinalStatus(protocol.StatusError)
 		ctx.EndInnerProtocol(protocol.StatusError)
 		return
 	}
