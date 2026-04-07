@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/Ctere1/radius-eap/protocol"
@@ -21,6 +22,9 @@ func (p *Payload) Type() protocol.Type {
 }
 
 func (p *Payload) Decode(raw []byte) error {
+	if len(raw) == 0 {
+		return errors.New("identity payload cannot be empty")
+	}
 	p.Identity = string(raw)
 	return nil
 }

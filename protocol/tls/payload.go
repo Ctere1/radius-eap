@@ -54,6 +54,9 @@ func (p *Payload) Decode(raw []byte) error {
 	}
 	p.Flags = Flag(raw[0])
 	raw = raw[1:]
+	if p.Flags&FlagTLSStart != 0 {
+		return errors.New("invalid TLS payload: unexpected start flag in peer packet")
+	}
 	if p.Flags&FlagLengthIncluded != 0 {
 		if len(raw) < 4 {
 			return errors.New("invalid size")
@@ -107,7 +110,7 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		ctx.Log().Debug("TLS: Updating buffer with new TLS data from packet")
 		p.st.Conn.UpdateData(p.Data)
 		p.updateExpectedWriterByteCount(ctx)
-		if !p.st.Conn.NeedsMoreData() && !p.st.HandshakeDone {
+		if !p.st.Conn.NeedsMoreData() && !p.st.HandshakeDoneValue() {
 			// Wait for outbound data to be available
 			p.st.Conn.OutboundData()
 		}
@@ -123,7 +126,7 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	if p.st.HasMore() {
 		return p.sendNextChunk()
 	}
-	if p.st.Conn.writer.Len() == 0 && p.st.HandshakeDone {
+	if p.st.Conn.writer.Len() == 0 && p.st.HandshakeDoneValue() {
 		if p.Inner == nil && p.failOnUnexpectedPostHandshakeClientData(ctx) {
 			return nil
 		}
@@ -135,7 +138,7 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		defer p.st.ContextCancel()
 		ctx.Log().Debug(
 			"TLS: Handshake done, awaiting final status",
-			"final_status", p.st.FinalStatus,
+			"final_status", p.st.FinalStatusValue(),
 			"context_err", p.st.Context.Err(),
 			"writer_len", p.st.Conn.writer.Len(),
 			"reader_len", p.st.Conn.reader.Len(),
@@ -145,13 +148,14 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 			func() (protocol.Status, error) {
 				ctx.Log().Debug(
 					"TLS: polling final status",
-					"final_status", p.st.FinalStatus,
+					"final_status", p.st.FinalStatusValue(),
 					"context_err", p.st.Context.Err(),
 				)
-				if p.st.FinalStatus == protocol.StatusUnknown {
-					return p.st.FinalStatus, errStall
+				finalStatus := p.st.FinalStatusValue()
+				if finalStatus == protocol.StatusUnknown {
+					return finalStatus, errStall
 				}
-				return p.st.FinalStatus, nil
+				return finalStatus, nil
 			},
 			retry.Context(p.st.Context),
 			retry.Delay(10*time.Microsecond),
@@ -169,12 +173,12 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 				"reader_len", p.st.Conn.reader.Len(),
 			)
 			pst = protocol.StatusError
-			p.st.FinalStatus = protocol.StatusError
+			p.st.SetFinalStatus(protocol.StatusError)
 		}
 		ctx.EndInnerProtocol(pst)
 		return nil
 	}
-	return p.startChunkedTransfer(p.st.Conn.OutboundData())
+	return p.outboundPayload(ctx)
 }
 
 func (p *Payload) failOnUnexpectedPostHandshakeClientData(ctx protocol.Context) bool {
@@ -190,7 +194,7 @@ func (p *Payload) failOnUnexpectedPostHandshakeClientData(ctx protocol.Context) 
 	logArgs := []any{"length", len(unread), "preview", debug.FormatBytes(unread)}
 	if hasTLSAlertRecord(unread) {
 		ctx.Log().Warn("TLS: client sent post-handshake TLS alert; rejecting exchange", logArgs...)
-		p.st.FinalStatus = protocol.StatusError
+		p.st.SetFinalStatus(protocol.StatusError)
 		if p.st.ContextCancel != nil {
 			p.st.ContextCancel()
 		}
@@ -205,7 +209,7 @@ func (p *Payload) failOnUnexpectedPostHandshakeClientData(ctx protocol.Context) 
 	}
 
 	ctx.Log().Warn("TLS: unexpected unread post-handshake client TLS data; rejecting exchange", logArgs...)
-	p.st.FinalStatus = protocol.StatusError
+	p.st.SetFinalStatus(protocol.StatusError)
 	if p.st.ContextCancel != nil {
 		p.st.ContextCancel()
 	}
@@ -217,7 +221,7 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	if r.Code != radius.CodeAccessAccept {
 		return nil
 	}
-	if p.st == nil || !p.st.HandshakeDone {
+	if p.st == nil || !p.st.HandshakeDoneValue() {
 		return nil
 	}
 	p.st.Logger.Debug("TLS: Adding MPPE Keys")
@@ -253,7 +257,7 @@ func (p *Payload) tlsInit(ctx protocol.Context) {
 	tlsSettings, ok := ctx.ProtocolSettings().(TLSConfig)
 	if !ok || tlsSettings.TLSConfig() == nil {
 		ctx.Log().Error("TLS: invalid protocol settings")
-		p.st.FinalStatus = protocol.StatusError
+		p.st.SetFinalStatus(protocol.StatusError)
 		ctx.EndInnerProtocol(protocol.StatusError)
 		return
 	}
@@ -281,13 +285,25 @@ func (p *Payload) tlsInit(ctx protocol.Context) {
 		err := p.st.TLS.HandshakeContext(p.st.Context)
 		if err != nil {
 			ctx.Log().Debug("TLS: Handshake error", "error", err)
-			p.st.FinalStatus = protocol.StatusError
+			p.st.SetFinalStatus(protocol.StatusError)
+			if p.st.ContextCancel != nil {
+				p.st.ContextCancel()
+			}
 			ctx.EndInnerProtocol(protocol.StatusError)
 			return
 		}
 		ctx.Log().Debug("TLS: handshake done")
 		p.tlsHandshakeFinished(ctx)
 	}()
+}
+
+func (p *Payload) outboundPayload(ctx protocol.Context) protocol.Payload {
+	data := p.st.Conn.OutboundData()
+	if p.st.FinalStatusValue() == protocol.StatusError && !p.st.HandshakeDoneValue() {
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return nil
+	}
+	return p.startChunkedTransfer(data)
 }
 
 func applyContextTLSHooks(cfg *tls.Config, ctx protocol.Context, settings Settings) {
@@ -357,16 +373,16 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 		return
 	}
 	p.st.MPPEKey = ksm
-	p.st.HandshakeDone = true
+	p.st.SetHandshakeDone(true)
 	if p.Inner == nil {
 		settings, ok := ctx.ProtocolSettings().(Settings)
 		if !ok || settings.HandshakeSuccessful == nil {
 			ctx.Log().Error("TLS: missing handshake callback in protocol settings")
-			p.st.FinalStatus = protocol.StatusError
+			p.st.SetFinalStatus(protocol.StatusError)
 			ctx.EndInnerProtocol(protocol.StatusError)
 			return
 		}
-		p.st.FinalStatus = settings.HandshakeSuccessful(p.st.HandshakeCtx, cs.PeerCertificates)
+		p.st.SetFinalStatus(settings.HandshakeSuccessful(p.st.HandshakeCtx, cs.PeerCertificates))
 	}
 }
 
@@ -462,8 +478,8 @@ func hasOnlyTLSApplicationDataRecords(data []byte) bool {
 func (p *Payload) String() string {
 	return fmt.Sprintf(
 		"<TLS Packet HandshakeDone=%t, FinalStatus=%d, ClientHello=%v>",
-		p.st.HandshakeDone,
-		p.st.FinalStatus,
+		p.st.HandshakeDoneValue(),
+		p.st.FinalStatusValue(),
 		p.st.ClientHello,
 	)
 }

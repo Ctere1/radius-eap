@@ -1,6 +1,7 @@
 package legacy_nak
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/Ctere1/radius-eap/protocol"
@@ -21,6 +22,9 @@ func (p *Payload) Type() protocol.Type {
 }
 
 func (p *Payload) Decode(raw []byte) error {
+	if len(raw) < 1 {
+		return errors.New("legacy NAK payload missing desired type")
+	}
 	p.DesiredType = protocol.Type(raw[0])
 	return nil
 }

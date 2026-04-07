@@ -2,6 +2,7 @@ package eap
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/Ctere1/radius-eap/protocol"
 	"layeh.com/radius"
@@ -15,6 +16,7 @@ type context struct {
 	log         protocol.Logger
 	settings    interface{}
 	parent      *context
+	mu          sync.RWMutex
 	endStatus   protocol.Status
 	handleInner func(protocol.Payload, protocol.StateManager, protocol.Context) (protocol.Payload, error)
 	modifier    func(*radius.Packet, *radius.Packet) error
@@ -66,8 +68,16 @@ func (ctx *context) EndInnerProtocol(st protocol.Status) {
 		ctx.parent.EndInnerProtocol(st)
 		return
 	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
 	if ctx.endStatus != protocol.StatusUnknown {
 		return
 	}
 	ctx.endStatus = st
+}
+
+func (ctx *context) EndStatus() protocol.Status {
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+	return ctx.endStatus
 }

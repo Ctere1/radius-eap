@@ -73,6 +73,17 @@ func (conn *BuffConn) SetExpectedWriterByteCount(total int, initialReceived int)
 		return
 	}
 
+	if conn.expectedWriterByteCount == total {
+		if conn.writtenByteCount >= total {
+			conn.expectedWriterByteCount = 0
+			conn.writtenByteCount = 0
+			return
+		}
+		if conn.writtenByteCount > initialReceived {
+			return
+		}
+	}
+
 	conn.expectedWriterByteCount = total
 	conn.writtenByteCount = initialReceived
 	if conn.writtenByteCount >= total {

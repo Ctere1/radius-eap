@@ -27,11 +27,7 @@ func (p *Packet) sendErrorResponse(w radius.ResponseWriter, r *radius.Request) {
 func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) {
 	l := p.stm.GetEAPSettings().Logger
 	p.r = r
-	rst := rfc2865.State_GetString(r.Packet)
-	if rst == "" {
-		rst = base64.StdEncoding.EncodeToString(securecookie.GenerateRandomKey(12))
-	}
-	p.state = rst
+	p.state = selectRequestState(r, p.stm)
 
 	rp := &Packet{r: r}
 	rep, err := p.handleEAP(p.eap, p.stm, nil)
@@ -59,11 +55,13 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 		}
 	}
 
-	err = rfc2865.State_SetString(rres, p.state)
-	if err != nil {
-		l.Warn("failed to set state", "error", err)
-		p.sendErrorResponse(w, r)
-		return
+	if rres.Code == radius.CodeAccessChallenge {
+		err = rfc2865.State_SetString(rres, p.state)
+		if err != nil {
+			l.Warn("failed to set state", "error", err)
+			p.sendErrorResponse(w, r)
+			return
+		}
 	}
 	eapEncoded, err := rp.Encode()
 	if err != nil {
@@ -90,8 +88,27 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 	}
 }
 
+func selectRequestState(r *radius.Request, stm protocol.StateManager) string {
+	if r != nil && r.Packet != nil {
+		if rst := rfc2865.State_GetString(r.Packet); rst != "" && stm.GetEAPState(rst) != nil {
+			return rst
+		}
+	}
+	return base64.StdEncoding.EncodeToString(securecookie.GenerateRandomKey(12))
+}
+
 func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, parentContext *context) (*eap.Payload, error) {
 	l := p.stm.GetEAPSettings().Logger
+	incoming, ok := pp.(*eap.Payload)
+	if !ok {
+		return &eap.Payload{Code: protocol.CodeFailure}, fmt.Errorf("unexpected root payload type %T", pp)
+	}
+	if incoming.Code != protocol.CodeResponse {
+		return &eap.Payload{
+			Code: protocol.CodeFailure,
+			ID:   incoming.ID,
+		}, fmt.Errorf("unexpected EAP code %d from peer", incoming.Code)
+	}
 
 	st := stm.GetEAPState(p.state)
 	if st == nil {
@@ -113,13 +130,19 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 		return p.handleEAP(pp, stm, nil)
 	}
 
-	if n, ok := pp.(*eap.Payload).Payload.(*legacy_nak.Payload); ok {
+	if n, ok := incoming.Payload.(*legacy_nak.Payload); ok {
 		l.Debug("Root-EAP: received NAK, trying next protocol", "desired", n.DesiredType)
-		pp.(*eap.Payload).Payload = nil
+		incoming.Payload = nil
 		return next()
 	}
 
-	np, t, _ := eap.EmptyPayload(stm.GetEAPSettings(), nextChallengeToOffer)
+	np, t, err := eap.EmptyPayload(stm.GetEAPSettings(), nextChallengeToOffer)
+	if err != nil {
+		return &eap.Payload{
+			Code: protocol.CodeFailure,
+			ID:   incoming.ID,
+		}, fmt.Errorf("load EAP payload type %d: %w", nextChallengeToOffer, err)
+	}
 
 	var ctx *context
 	if parentContext != nil {
@@ -150,11 +173,42 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 		MsgType: t,
 	}
 	var payload any
-	if reflect.TypeOf(pp.(*eap.Payload).Payload) == reflect.TypeOf(np) {
-		err := np.Decode(pp.(*eap.Payload).RawPayload)
-		if err != nil {
-			ctx.log.Warn("failed to decode payload", "error", err)
+	if reflect.TypeOf(incoming.Payload) != reflect.TypeOf(np) {
+		if ctx.IsProtocolStart(np.Type()) {
+			payload = np.Handle(ctx)
+			if payload != nil {
+				res.Payload = payload.(protocol.Payload)
+			}
+			stm.SetEAPState(p.state, st)
+			if rm, ok := np.(protocol.ResponseModifier); ok {
+				ctx.log.Debug("Root-EAP: Registered response modifier")
+				p.responseModifiers = append(p.responseModifiers, rm)
+			}
+			switch ctx.EndStatus() {
+			case protocol.StatusSuccess:
+				res.Code = protocol.CodeSuccess
+				res.ID -= 1
+			case protocol.StatusError:
+				res.Code = protocol.CodeFailure
+				res.ID -= 1
+			case protocol.StatusNextProtocol:
+				ctx.log.Debug("Root-EAP: Protocol ended, starting next protocol")
+				return next()
+			case protocol.StatusUnknown:
+			}
+			return res, nil
 		}
+		return &eap.Payload{
+			Code: protocol.CodeFailure,
+			ID:   incoming.ID,
+		}, fmt.Errorf("unexpected EAP payload type %T, expected %T", incoming.Payload, np)
+	}
+	err = np.Decode(incoming.RawPayload)
+	if err != nil {
+		return &eap.Payload{
+			Code: protocol.CodeFailure,
+			ID:   incoming.ID,
+		}, fmt.Errorf("decode EAP payload %T: %w", np, err)
 	}
 	payload = np.Handle(ctx)
 	if payload != nil {
@@ -168,7 +222,7 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 		p.responseModifiers = append(p.responseModifiers, rm)
 	}
 
-	switch ctx.endStatus {
+	switch ctx.EndStatus() {
 	case protocol.StatusSuccess:
 		res.Code = protocol.CodeSuccess
 		res.ID -= 1

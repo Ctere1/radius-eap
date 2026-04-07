@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,6 +68,49 @@ func (t testContext) State() string { return "" }
 
 func (t testContext) Log() protocol.Logger { return t.log }
 
+type recordingContext struct {
+	mu        sync.Mutex
+	endStatus protocol.Status
+}
+
+func (c *recordingContext) Packet() *radius.Request { return nil }
+
+func (c *recordingContext) RootPayload() protocol.Payload { return nil }
+
+func (c *recordingContext) ProtocolSettings() interface{} { return nil }
+
+func (c *recordingContext) GetProtocolState(protocol.Type) interface{} { return nil }
+
+func (c *recordingContext) SetProtocolState(protocol.Type, interface{}) {}
+
+func (c *recordingContext) IsProtocolStart(protocol.Type) bool { return false }
+
+func (c *recordingContext) ModifyRADIUSResponse(r, q *radius.Packet) error { return nil }
+
+func (c *recordingContext) AddResponseModifier(func(r, q *radius.Packet) error) {}
+
+func (c *recordingContext) HandleInnerEAP(protocol.Payload, protocol.StateManager) (protocol.Payload, error) {
+	return nil, nil
+}
+
+func (c *recordingContext) Inner(protocol.Payload, protocol.Type) protocol.Context { return c }
+
+func (c *recordingContext) EndInnerProtocol(status protocol.Status) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.endStatus = status
+}
+
+func (c *recordingContext) State() string { return "" }
+
+func (c *recordingContext) Log() protocol.Logger { return eap.DefaultLogger() }
+
+func (c *recordingContext) recordedStatus() protocol.Status {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.endStatus
+}
+
 func TestPayloadEncodeWithoutLengthIncludedCopiesData(t *testing.T) {
 	p := &Payload{
 		Flags: FlagMoreFragments,
@@ -76,6 +120,15 @@ func TestPayloadEncodeWithoutLengthIncludedCopiesData(t *testing.T) {
 	raw, err := p.Encode()
 	assert.NoError(t, err)
 	assert.Equal(t, []byte{byte(FlagMoreFragments), 0x01, 0x02, 0x03}, raw)
+}
+
+func TestDecodeRejectsUnexpectedStartFlag(t *testing.T) {
+	p := &Payload{}
+
+	err := p.Decode([]byte{byte(FlagTLSStart)})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected start flag")
 }
 
 func TestSetExpectedWriterByteCountTracksInitialFragment(t *testing.T) {
@@ -203,11 +256,51 @@ func TestTLSHandshakeFinishedExportsKeysForTLS12AndTLS13(t *testing.T) {
 			p.tlsHandshakeFinished(ctx)
 
 			assert.True(t, called)
-			assert.True(t, p.st.HandshakeDone)
+			assert.True(t, p.st.HandshakeDoneValue())
 			assert.Len(t, p.st.MPPEKey, 128)
-			assert.Equal(t, protocol.StatusSuccess, p.st.FinalStatus)
+			assert.Equal(t, protocol.StatusSuccess, p.st.FinalStatusValue())
 		})
 	}
+}
+
+func TestOutboundPayload_HandshakeFailureWithoutDataReturnsNil(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	protoCtx := &recordingContext{}
+
+	payload := &Payload{
+		st: &State{
+			Conn:   NewBuffConn(nil, ctx, protoCtx),
+			Logger: eap.DefaultLogger(),
+		},
+	}
+	payload.st.SetFinalStatus(protocol.StatusError)
+
+	got := payload.outboundPayload(protoCtx)
+	assert.Nil(t, got)
+	assert.Equal(t, protocol.StatusError, protoCtx.recordedStatus())
+}
+
+func TestOutboundPayload_HandshakeFailureWithBufferedAlertReturnsNil(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	protoCtx := &recordingContext{}
+
+	conn := NewBuffConn(nil, ctx, protoCtx)
+	_, err := conn.Write([]byte{0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x2a})
+	require.NoError(t, err)
+
+	payload := &Payload{
+		st: &State{
+			Conn:   conn,
+			Logger: eap.DefaultLogger(),
+		},
+	}
+	payload.st.SetFinalStatus(protocol.StatusError)
+
+	got := payload.outboundPayload(protoCtx)
+	assert.Nil(t, got)
+	assert.Equal(t, protocol.StatusError, protoCtx.recordedStatus())
 }
 
 func newMutualTLSPair(t *testing.T, version uint16) (*tls.Conn, *tls.Conn) {
