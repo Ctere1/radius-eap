@@ -370,6 +370,15 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 		return
 	}
 	p.st.MPPEKey = ksm
+	if err := p.queueProtectedSuccessIndicator(ctx, cs); err != nil {
+		ctx.Log().Warn("failed to queue protected success indication", "error", err)
+		if p.st.ContextCancel != nil {
+			p.st.ContextCancel()
+		}
+		p.st.SetFinalStatus(protocol.StatusError)
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return
+	}
 	p.st.SetHandshakeDone(true)
 	if p.Inner == nil {
 		settings, ok := ctx.ProtocolSettings().(Settings)
@@ -381,6 +390,15 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 		}
 		p.st.SetFinalStatus(settings.HandshakeSuccessful(p.st.HandshakeCtx, cs.PeerCertificates))
 	}
+}
+
+func (p *Payload) queueProtectedSuccessIndicator(ctx protocol.Context, cs tls.ConnectionState) error {
+	if p.Inner != nil || cs.Version != tls.VersionTLS13 {
+		return nil
+	}
+	ctx.Log().Debug("TLS: queueing TLS 1.3 protected success indication")
+	_, err := p.st.TLS.Write([]byte{0x00})
+	return err
 }
 
 func (p *Payload) startChunkedTransfer(data []byte) *Payload {

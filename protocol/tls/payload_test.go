@@ -23,6 +23,31 @@ import (
 	"layeh.com/radius/vendors/microsoft"
 )
 
+type recordingConn struct {
+	net.Conn
+	mu     sync.Mutex
+	writes bytes.Buffer
+}
+
+func (c *recordingConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	c.writes.Write(p)
+	c.mu.Unlock()
+	return c.Conn.Write(p)
+}
+
+func (c *recordingConn) Bytes() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return bytes.Clone(c.writes.Bytes())
+}
+
+func (c *recordingConn) Reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writes.Reset()
+}
+
 type testContext struct {
 	log           protocol.Logger
 	settings      interface{}
@@ -232,11 +257,34 @@ func TestSendNextChunkOnlyFirstFragmentIncludesLength(t *testing.T) {
 func TestTLSHandshakeFinishedExportsKeysForTLS12AndTLS13(t *testing.T) {
 	for _, version := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
 		t.Run(tls.VersionName(version), func(t *testing.T) {
-			serverConn, clientConn := newMutualTLSPair(t, version)
+			serverConn, clientConn, _ := newRecordedMutualTLSPair(t, version)
 			t.Cleanup(func() {
 				_ = serverConn.Close()
 				_ = clientConn.Close()
 			})
+			if version == tls.VersionTLS13 {
+				clientRead := make(chan []byte, 1)
+				clientErr := make(chan error, 1)
+				go func() {
+					buf := make([]byte, 1)
+					n, err := clientConn.Read(buf)
+					if err != nil {
+						clientErr <- err
+						return
+					}
+					clientRead <- bytes.Clone(buf[:n])
+				}()
+				t.Cleanup(func() {
+					select {
+					case got := <-clientRead:
+						assert.Equal(t, []byte{0x00}, got)
+					case err := <-clientErr:
+						t.Fatalf("client read failed: %v", err)
+					case <-time.After(2 * time.Second):
+						t.Fatal("timed out waiting for protected success indication")
+					}
+				})
+			}
 
 			innerCtx := testContext{log: eap.DefaultLogger()}
 			called := false
@@ -268,6 +316,95 @@ func TestTLSHandshakeFinishedExportsKeysForTLS12AndTLS13(t *testing.T) {
 			assert.Equal(t, protocol.StatusSuccess, p.st.FinalStatusValue())
 		})
 	}
+}
+
+func TestTLSHandshakeFinished_QueuesProtectedSuccessIndicatorForTLS13Outer(t *testing.T) {
+	serverConn, clientConn, recorder := newRecordedMutualTLSPair(t, tls.VersionTLS13)
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+	recorder.Reset()
+
+	clientRead := make(chan []byte, 1)
+	clientErr := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		n, err := clientConn.Read(buf)
+		if err != nil {
+			clientErr <- err
+			return
+		}
+		clientRead <- bytes.Clone(buf[:n])
+	}()
+
+	innerCtx := testContext{log: eap.DefaultLogger()}
+	p := &Payload{
+		st: &State{
+			TLS:           serverConn,
+			HandshakeCtx:  innerCtx,
+			ContextCancel: func() {},
+		},
+	}
+	ctx := testContext{
+		log: eap.DefaultLogger(),
+		settings: Settings{
+			Config: &tls.Config{},
+			HandshakeSuccessful: func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status {
+				return protocol.StatusSuccess
+			},
+		},
+	}
+
+	p.tlsHandshakeFinished(ctx)
+
+	select {
+	case got := <-clientRead:
+		assert.Equal(t, []byte{0x00}, got)
+	case err := <-clientErr:
+		t.Fatalf("client read failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for protected success indication")
+	}
+
+	rawWrites := recorder.Bytes()
+	require.NotEmpty(t, rawWrites)
+	assert.Equal(t, byte(23), rawWrites[0], "expected TLS application_data record")
+	assert.True(t, p.st.HandshakeDoneValue())
+	assert.Equal(t, protocol.StatusSuccess, p.st.FinalStatusValue())
+}
+
+func TestTLSHandshakeFinished_DoesNotQueueProtectedSuccessIndicatorForTLS12(t *testing.T) {
+	serverConn, clientConn, recorder := newRecordedMutualTLSPair(t, tls.VersionTLS12)
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+	recorder.Reset()
+
+	innerCtx := testContext{log: eap.DefaultLogger()}
+	p := &Payload{
+		st: &State{
+			TLS:           serverConn,
+			HandshakeCtx:  innerCtx,
+			ContextCancel: func() {},
+		},
+	}
+	ctx := testContext{
+		log: eap.DefaultLogger(),
+		settings: Settings{
+			Config: &tls.Config{},
+			HandshakeSuccessful: func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status {
+				return protocol.StatusSuccess
+			},
+		},
+	}
+
+	p.tlsHandshakeFinished(ctx)
+
+	assert.Empty(t, recorder.Bytes())
+	assert.True(t, p.st.HandshakeDoneValue())
+	assert.Equal(t, protocol.StatusSuccess, p.st.FinalStatusValue())
 }
 
 func TestOutboundPayload_HandshakeFailureWithoutDataReturnsNil(t *testing.T) {
@@ -373,6 +510,44 @@ func newMutualTLSPair(t *testing.T, version uint16) (*tls.Conn, *tls.Conn) {
 	require.NoError(t, <-errCh)
 
 	return serverConn, clientConn
+}
+
+func newRecordedMutualTLSPair(t *testing.T, version uint16) (*tls.Conn, *tls.Conn, *recordingConn) {
+	t.Helper()
+
+	caPEM, caKeyPEM, caCert := generateCertificateAuthority(t)
+	serverCert := generateLeafCertificate(t, caPEM, caKeyPEM, caCert, "server.test", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
+	clientCert := generateLeafCertificate(t, caPEM, caKeyPEM, caCert, "client.test", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+
+	rootCAs := x509.NewCertPool()
+	require.True(t, rootCAs.AppendCertsFromPEM(caPEM))
+
+	serverSide, clientSide := net.Pipe()
+	recorder := &recordingConn{Conn: serverSide}
+
+	serverConn := tls.Server(recorder, &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    rootCAs,
+		MinVersion:   version,
+		MaxVersion:   version,
+	})
+	clientConn := tls.Client(clientSide, &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      rootCAs,
+		ServerName:   "server.test",
+		MinVersion:   version,
+		MaxVersion:   version,
+	})
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- serverConn.Handshake() }()
+	go func() { errCh <- clientConn.Handshake() }()
+
+	require.NoError(t, <-errCh)
+	require.NoError(t, <-errCh)
+
+	return serverConn, clientConn, recorder
 }
 
 func generateCertificateAuthority(t *testing.T) ([]byte, []byte, *x509.Certificate) {
