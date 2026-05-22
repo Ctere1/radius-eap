@@ -8,9 +8,6 @@ A minimal and pragmatic implementation of common **EAP** methods for **RADIUS**,
 - Forked from [github.com/BeryJu/radius-eap](https://github.com/BeryJu/radius-eap)
 - In-depth write-up: [Implementing EAP](https://beryju.io/blog/2025-05-implementing-eap/) by **BeryJu**
 
-> 🧪 Currently exploring MFA (Multi-Factor Authentication) support for Wi-Fi networks using EAP methods.  
-> If you have experience or insights in this area, your input would be greatly appreciated!
-
 Thanks to **BeryJu** for the original implementation and the excellent blog post.
 
 # EAP protocol implementation
