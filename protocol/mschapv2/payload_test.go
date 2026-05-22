@@ -33,6 +33,15 @@ func TestDecodeRejectsTruncatedResponse(t *testing.T) {
 	assert.Contains(t, err.Error(), "incorrect MS-Length")
 }
 
+func TestDecodeRejectsUnsupportedPeerOpcode(t *testing.T) {
+	p := &Payload{}
+
+	err := p.Decode([]byte{byte(OpChallenge), 0x01, 0x00, 0x05, 0x00})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported peer opcode")
+}
+
 func TestParseResponseRejectsWrongLength(t *testing.T) {
 	_, err := ParseResponse(make([]byte, responseValueSize-1))
 

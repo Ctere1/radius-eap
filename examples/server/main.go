@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"sync"
 
 	eap "github.com/Ctere1/radius-eap"
 	"github.com/Ctere1/radius-eap/protocol"
@@ -23,6 +24,7 @@ import (
 
 type Server struct {
 	rs       radius.PacketServer
+	mu       sync.RWMutex
 	eapState map[string]*protocol.State
 	cert     ttls.Certificate
 }
@@ -63,10 +65,14 @@ func (s *Server) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 }
 
 func (s *Server) GetEAPState(key string) *protocol.State {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.eapState[key]
 }
 
 func (s *Server) SetEAPState(key string, state *protocol.State) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.eapState[key] = state
 }
 

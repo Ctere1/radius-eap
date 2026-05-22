@@ -143,6 +143,39 @@ func (c *recordingContext) recordedStatus() protocol.Status {
 	return c.endStatus
 }
 
+type selectiveStartContext struct {
+	*recordingContext
+	protocolState map[protocol.Type]interface{}
+}
+
+func (c *selectiveStartContext) IsProtocolStart(tp protocol.Type) bool { return tp != TypeTLS }
+
+func (c *selectiveStartContext) Inner(protocol.Payload, protocol.Type) protocol.Context { return c }
+
+func (c *selectiveStartContext) GetProtocolState(tp protocol.Type) interface{} {
+	if c.protocolState == nil {
+		return nil
+	}
+	return c.protocolState[tp]
+}
+
+type nilInnerPayload struct{}
+
+func (p *nilInnerPayload) Decode([]byte) error { return nil }
+
+func (p *nilInnerPayload) Encode() ([]byte, error) { return nil, nil }
+
+func (p *nilInnerPayload) Type() protocol.Type { return 200 }
+
+func (p *nilInnerPayload) Offerable() bool { return true }
+
+func (p *nilInnerPayload) String() string { return "nil-inner" }
+
+func (p *nilInnerPayload) Handle(ctx protocol.Context) protocol.Payload {
+	ctx.EndInnerProtocol(protocol.StatusSuccess)
+	return nil
+}
+
 func TestPayloadEncodeWithoutLengthIncludedCopiesData(t *testing.T) {
 	p := &Payload{
 		Flags: FlagMoreFragments,
@@ -445,6 +478,26 @@ func TestOutboundPayload_HandshakeFailureWithBufferedAlertReturnsNil(t *testing.
 	got := payload.outboundPayload(protoCtx)
 	assert.Nil(t, got)
 	assert.Equal(t, protocol.StatusError, protoCtx.recordedStatus())
+}
+
+func TestHandleReturnsNilWhenInnerProtocolFinishesWithoutPayload(t *testing.T) {
+	protoCtx := &selectiveStartContext{recordingContext: &recordingContext{}}
+	payload := &Payload{
+		Inner: &nilInnerPayload{},
+		st: &State{
+			Conn:   NewBuffConn(nil, context.Background(), protoCtx),
+			Logger: eap.DefaultLogger(),
+		},
+	}
+	payload.st.SetHandshakeDone(true)
+	protoCtx.protocolState = map[protocol.Type]interface{}{
+		TypeTLS: payload.st,
+	}
+
+	got := payload.Handle(protoCtx)
+
+	assert.Nil(t, got)
+	assert.Equal(t, protocol.StatusSuccess, protoCtx.recordedStatus())
 }
 
 func TestModifyRADIUSResponseAddsMPPEKeysWithoutLegacyAttributesByDefault(t *testing.T) {

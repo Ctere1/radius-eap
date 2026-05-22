@@ -16,10 +16,12 @@ type context struct {
 	log         protocol.Logger
 	settings    interface{}
 	parent      *context
-	mu          sync.RWMutex
+	// endStatus is shared with async protocol callbacks (for example TLS
+	// handshake completion), so reads/writes must stay synchronized.
+	endStatusMu sync.RWMutex
 	endStatus   protocol.Status
 	handleInner func(protocol.Payload, protocol.StateManager, protocol.Context) (protocol.Payload, error)
-	modifier    func(*radius.Packet, *radius.Packet) error
+	modifiers   []func(*radius.Packet, *radius.Packet) error
 }
 
 func (ctx *context) RootPayload() protocol.Payload            { return ctx.rootPayload }
@@ -36,15 +38,21 @@ func (ctx *context) HandleInnerEAP(p protocol.Payload, st protocol.StateManager)
 func (ctx *context) AddResponseModifier(mod func(*radius.Packet, *radius.Packet) error) {
 	if ctx.parent != nil {
 		ctx.parent.AddResponseModifier(mod)
+		return
 	}
-	ctx.modifier = mod
+	if mod == nil {
+		return
+	}
+	ctx.modifiers = append(ctx.modifiers, mod)
 }
 func (ctx *context) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error {
 	if ctx.parent != nil {
 		return ctx.parent.ModifyRADIUSResponse(r, q)
 	}
-	if ctx.modifier != nil {
-		return ctx.modifier(r, q)
+	for _, mod := range ctx.modifiers {
+		if err := mod(r, q); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -68,8 +76,8 @@ func (ctx *context) EndInnerProtocol(st protocol.Status) {
 		ctx.parent.EndInnerProtocol(st)
 		return
 	}
-	ctx.mu.Lock()
-	defer ctx.mu.Unlock()
+	ctx.endStatusMu.Lock()
+	defer ctx.endStatusMu.Unlock()
 	if ctx.endStatus != protocol.StatusUnknown {
 		return
 	}
@@ -77,7 +85,7 @@ func (ctx *context) EndInnerProtocol(st protocol.Status) {
 }
 
 func (ctx *context) EndStatus() protocol.Status {
-	ctx.mu.RLock()
-	defer ctx.mu.RUnlock()
+	ctx.endStatusMu.RLock()
+	defer ctx.endStatusMu.RUnlock()
 	return ctx.endStatus
 }

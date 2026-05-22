@@ -9,7 +9,9 @@ import (
 )
 
 type State struct {
-	mu                          sync.RWMutex
+	// statusMu synchronizes request processing with the background TLS handshake
+	// goroutine when handshake completion and final status are observed.
+	statusMu                    sync.RWMutex
 	RemainingChunks             [][]byte
 	HandshakeDone               bool
 	FinalStatus                 protocol.Status
@@ -37,25 +39,25 @@ func (s *State) HasMore() bool {
 }
 
 func (s *State) HandshakeDoneValue() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.statusMu.RLock()
+	defer s.statusMu.RUnlock()
 	return s.HandshakeDone
 }
 
 func (s *State) SetHandshakeDone(done bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
 	s.HandshakeDone = done
 }
 
 func (s *State) FinalStatusValue() protocol.Status {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.statusMu.RLock()
+	defer s.statusMu.RUnlock()
 	return s.FinalStatus
 }
 
 func (s *State) SetFinalStatus(status protocol.Status) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
 	s.FinalStatus = status
 }

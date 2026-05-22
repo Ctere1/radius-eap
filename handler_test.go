@@ -1,6 +1,7 @@
 package eap
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/Ctere1/radius-eap/protocol"
@@ -269,5 +270,33 @@ func TestHandleRadiusPacket_RejectsMisconfiguredProtocolPriority(t *testing.T) {
 	}
 	if w.packet.Code != radius.CodeAccessReject {
 		t.Fatalf("expected Access-Reject, got %d", w.packet.Code)
+	}
+}
+
+func TestContextModifyRADIUSResponseExecutesAllRegisteredModifiers(t *testing.T) {
+	root := &context{
+		typeState: map[protocol.Type]any{},
+		log:       DefaultLogger(),
+	}
+	child := root.Inner(&terminalPayload{}, terminalProtocolType).(*context)
+
+	var calls []string
+	root.AddResponseModifier(func(r, q *radius.Packet) error {
+		calls = append(calls, "root")
+		return nil
+	})
+	child.AddResponseModifier(func(r, q *radius.Packet) error {
+		calls = append(calls, "child")
+		return nil
+	})
+
+	req := radius.New(radius.CodeAccessRequest, []byte("secret"))
+	res := radius.New(radius.CodeAccessAccept, []byte("secret"))
+	if err := child.ModifyRADIUSResponse(res, req); err != nil {
+		t.Fatalf("modify response: %v", err)
+	}
+
+	if !slices.Equal(calls, []string{"root", "child"}) {
+		t.Fatalf("unexpected modifier call order: %v", calls)
 	}
 }

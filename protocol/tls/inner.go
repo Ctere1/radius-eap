@@ -8,7 +8,7 @@ import (
 	"github.com/Ctere1/radius-eap/protocol"
 )
 
-func (p *Payload) innerHandler(ctx protocol.Context) {
+func (p *Payload) innerHandler(ctx protocol.Context) bool {
 	var d []byte
 	if !ctx.IsProtocolStart(p.Inner.Type()) {
 		ctx.Log().Debug("TLS: Reading from TLS for inner protocol")
@@ -21,33 +21,38 @@ func (p *Payload) innerHandler(ctx protocol.Context) {
 				ctx.Log().Warn("TLS: Failed to read from TLS connection", "error", readErr)
 			}
 			ctx.EndInnerProtocol(protocol.StatusError)
-			return
+			return false
 		}
 		if len(d) == 0 {
 			ctx.Log().Warn("TLS: inner protocol payload was empty")
 			ctx.EndInnerProtocol(protocol.StatusError)
-			return
+			return false
 		}
 	}
 	err := p.Inner.Decode(d)
 	if err != nil {
 		ctx.Log().Warn("TLS: failed to decode inner protocol", "error", err)
 		ctx.EndInnerProtocol(protocol.StatusError)
-		return
+		return false
 	}
 	pl := p.Inner.Handle(ctx.Inner(p.Inner, p.Inner.Type()))
+	if pl == nil {
+		ctx.Log().Debug("TLS: inner protocol completed without outbound payload")
+		return false
+	}
 	enc, err := pl.Encode()
 	if err != nil {
 		ctx.Log().Warn("TLS: failed to encode inner protocol", "error", err)
 		ctx.EndInnerProtocol(protocol.StatusError)
-		return
+		return false
 	}
 	_, err = p.st.TLS.Write(enc)
 	if err != nil {
 		ctx.Log().Warn("TLS: failed to write to TLS", "error", err)
 		ctx.EndInnerProtocol(protocol.StatusError)
-		return
+		return false
 	}
+	return true
 }
 
 func readInnerTLSRecord(r io.Reader) ([]byte, error) {

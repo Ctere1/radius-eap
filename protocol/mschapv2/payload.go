@@ -33,6 +33,7 @@ const (
 	OpChallenge OpCode = 1
 	OpResponse  OpCode = 2
 	OpSuccess   OpCode = 3
+	OpFailure   OpCode = 4
 )
 
 type Payload struct {
@@ -64,10 +65,12 @@ func (p *Payload) Decode(raw []byte) error {
 		}
 		return nil
 	}
+	if p.OpCode != OpResponse {
+		return fmt.Errorf("MSCHAPv2: unsupported peer opcode: %d", p.OpCode)
+	}
 	if len(raw) < 5 {
 		return fmt.Errorf("MSCHAPv2: payload too short: %d", len(raw))
 	}
-	// TODO: Validate against root EAP packet
 	p.MSCHAPv2ID = raw[1]
 	p.MSLength = binary.BigEndian.Uint16(raw[2:])
 	if int(p.MSLength) != len(raw) {
