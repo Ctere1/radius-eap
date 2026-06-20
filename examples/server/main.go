@@ -6,7 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
-	"sync"
+	"time"
 
 	eap "github.com/Ctere1/radius-eap"
 	"github.com/Ctere1/radius-eap/protocol"
@@ -23,28 +23,28 @@ import (
 )
 
 type Server struct {
-	rs       radius.PacketServer
-	mu       sync.RWMutex
-	eapState map[string]*protocol.State
-	cert     ttls.Certificate
+	rs   radius.PacketServer
+	cert ttls.Certificate
+	// eapStates is the library-provided StateManager: concurrency-safe with
+	// time-based eviction, so abandoned EAP sessions cannot leak memory.
+	eapStates *eap.MemoryStateManager
 }
 
 func main() {
-	s := &Server{
-		eapState: map[string]*protocol.State{},
+	cert, err := ttls.LoadX509KeyPair("./examples/server/cert.pem", "./examples/server/key.pem")
+	if err != nil {
+		panic(err)
 	}
+	s := &Server{cert: cert}
+	s.eapStates = eap.NewMemoryStateManager(eapSettings(cert), 5*time.Minute)
+	defer s.eapStates.Close()
+
 	s.rs = radius.PacketServer{
 		Handler:      s,
 		SecretSource: s,
 		Addr:         "0.0.0.0:1812",
 	}
-	cert, err := ttls.LoadX509KeyPair("./examples/server/cert.pem", "./examples/server/key.pem")
-	if err != nil {
-		panic(err)
-	}
-	s.cert = cert
-	err = s.rs.ListenAndServe()
-	if err != nil {
+	if err := s.rs.ListenAndServe(); err != nil {
 		panic(err)
 	}
 }
@@ -56,7 +56,7 @@ func (s *Server) RADIUSSecret(ctx context.Context, remoteAddr net.Addr) ([]byte,
 func (s *Server) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 	ep := rfc2869.EAPMessage_Get(r.Packet)
 	if len(ep) > 0 {
-		ep, err := eap.Decode(s, ep)
+		ep, err := eap.Decode(s.eapStates, ep)
 		if err != nil {
 			panic(err)
 		}
@@ -64,19 +64,7 @@ func (s *Server) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 	}
 }
 
-func (s *Server) GetEAPState(key string) *protocol.State {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.eapState[key]
-}
-
-func (s *Server) SetEAPState(key string, state *protocol.State) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.eapState[key] = state
-}
-
-func (s *Server) GetEAPSettings() protocol.Settings {
+func eapSettings(cert ttls.Certificate) protocol.Settings {
 	return protocol.Settings{
 		Logger: eap.DefaultLogger(),
 		Protocols: []protocol.ProtocolConstructor{
@@ -93,7 +81,7 @@ func (s *Server) GetEAPSettings() protocol.Settings {
 		ProtocolSettings: map[protocol.Type]interface{}{
 			tls.TypeTLS: tls.Settings{
 				Config: &ttls.Config{
-					Certificates: []ttls.Certificate{s.cert},
+					Certificates: []ttls.Certificate{cert},
 					ClientAuth:   ttls.RequireAnyClientCert,
 				},
 				HandshakeSuccessful: func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status {
@@ -110,7 +98,7 @@ func (s *Server) GetEAPSettings() protocol.Settings {
 			},
 			peap.TypePEAP: peap.Settings{
 				Config: &ttls.Config{
-					Certificates: []ttls.Certificate{s.cert},
+					Certificates: []ttls.Certificate{cert},
 				},
 				InnerProtocols: protocol.Settings{
 					Protocols: []protocol.ProtocolConstructor{

@@ -39,9 +39,14 @@ func (p *Payload) Decode(raw []byte) error {
 	p.Code = protocol.Code(raw[0])
 	p.ID = raw[1]
 	p.Length = binary.BigEndian.Uint16(raw[2:])
-	if p.Length != uint16(len(raw)) {
-		return fmt.Errorf("mismatched packet length; got %d, expected %d", p.Length, uint16(len(raw)))
+	// RFC 3748 Section 4: a Length greater than the number of received octets
+	// means the packet is truncated and MUST be silently discarded. Octets
+	// beyond Length are Data Link Layer padding and MUST be ignored — not
+	// rejected — so we trim to Length rather than requiring an exact match.
+	if int(p.Length) < 4 || int(p.Length) > len(raw) {
+		return fmt.Errorf("invalid EAP length %d for %d received octets", p.Length, len(raw))
 	}
+	raw = raw[:p.Length]
 	if p.Code != protocol.CodeRequest && p.Code != protocol.CodeResponse {
 		p.RawPayload = raw[4:]
 		return nil

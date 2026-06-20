@@ -24,6 +24,13 @@ func (p *Packet) sendErrorResponse(w radius.ResponseWriter, r *radius.Request) {
 	}
 }
 
+// HandleRadiusPacket processes one decoded EAP Access-Request and writes the
+// RADIUS response. It resolves the session State, runs the EAP method state
+// machine (handleEAP), maps the resulting EAP Code to a RADIUS code
+// (Request→Access-Challenge, Success→Access-Accept, Failure→Access-Reject),
+// applies any registered response modifiers, attaches the State on challenges,
+// and finally sets the RFC 2869 Message-Authenticator. It never returns an
+// error: failures are turned into an Access-Reject.
 func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) {
 	l := p.stm.GetEAPSettings().Logger
 	p.r = r
@@ -88,6 +95,10 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 	}
 }
 
+// selectRequestState reuses the RADIUS State from the request when it names a
+// known EAP session, otherwise it mints a fresh cryptographically-random key.
+// This binds each EAP conversation to a stable, unguessable State value across
+// round-trips (RFC 5080 Section 2.1.1).
 func selectRequestState(r *radius.Request, stm protocol.StateManager) string {
 	if r != nil && r.Packet != nil {
 		if rst := rfc2865.State_GetString(r.Packet); rst != "" && stm.GetEAPState(rst) != nil {
@@ -97,6 +108,13 @@ func selectRequestState(r *radius.Request, stm protocol.StateManager) string {
 	return base64.StdEncoding.EncodeToString(securecookie.GenerateRandomKey(12))
 }
 
+// handleEAP is the recursive EAP method state machine. It validates the inbound
+// EAP Response, negotiates the next method from the priority list (advancing on
+// a Legacy Nak or when a method ends with StatusNextProtocol), dispatches to
+// that method's Handle, and builds the outbound EAP packet. The parentContext is
+// non-nil only for inner methods (PEAP phase 2), in which case stm is the PEAP
+// payload acting as a nested StateManager. It always returns a non-nil
+// *eap.Payload so the caller can encode a response even on error.
 func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, parentContext *context) (*eap.Payload, error) {
 	l := p.stm.GetEAPSettings().Logger
 	incoming, ok := pp.(*eap.Payload)
@@ -154,6 +172,7 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 			rootPayload: p.eap,
 			state:       p.state,
 			typeState:   st.TypeState,
+			session:     st,
 			log:         l.With("type", fmt.Sprintf("%T", np), "code", t),
 			settings:    stm.GetEAPSettings().ProtocolSettings[t],
 		}
@@ -237,6 +256,10 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 	return res, nil
 }
 
+// setMessageAuthenticator computes the RFC 2869 Message-Authenticator
+// (HMAC-MD5 over the packet with the attribute zeroed, keyed by the RADIUS
+// shared secret) and writes it back. It must be called last, after all other
+// attributes are set, so the HMAC covers the complete packet.
 func (p *Packet) setMessageAuthenticator(rp *radius.Packet) error {
 	_ = rfc2869.MessageAuthenticator_Set(rp, make([]byte, 16))
 	hash := hmac.New(md5.New, rp.Secret)

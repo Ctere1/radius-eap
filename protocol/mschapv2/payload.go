@@ -104,6 +104,11 @@ func (p *Payload) Encode() ([]byte, error) {
 	return encoded, nil
 }
 
+// Handle runs the MS-CHAPv2 exchange: on start it issues the random server
+// Challenge; on the peer Response it asks the consumer to authenticate, compares
+// the expected and received NT-Response in constant time, and on a match drives
+// the Success packet and the protected result. The consumer-supplied MPPE keys
+// are attached to the Access-Accept in ModifyRADIUSResponse.
 func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	defer func() {
 		ctx.SetProtocolState(TypeMSCHAPv2, p.st)
@@ -140,6 +145,7 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		res, err := ParseResponse(p.Response)
 		if err != nil {
 			ctx.Log().Warn("MSCHAPv2: failed to parse response", "error", err)
+			ctx.EndInnerProtocol(protocol.StatusError)
 			return nil
 		}
 		p.st.PeerChallenge = res.Challenge
@@ -149,11 +155,16 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		}
 		auth, authErr := authenticateRequest(ctx, settings, authReq)
 		if authErr != nil {
-			ctx.Log().Warn("MSCHAPv2: failed to check password", "error", authErr)
+			ctx.Log().Warn("MSCHAPv2: credential backend error", "error", authErr)
+			ctx.EndInnerProtocol(protocol.StatusError)
 			return nil
 		}
 		if !bytes.Equal(auth.NTResponse, res.NTResponse) {
-			ctx.Log().Warn("MSCHAPv2: NT response mismatch")
+			// Normal authentication failure (wrong password), not a server error.
+			// End the inner exchange deliberately so the tunnel emits EAP-Failure
+			// instead of falling through to a spurious encode error.
+			ctx.Log().Info("MSCHAPv2: authentication failed (NT-Response mismatch)")
+			ctx.EndInnerProtocol(protocol.StatusError)
 			return nil
 		}
 		ctx.Log().Info("MSCHAPv2: Successfully checked password")

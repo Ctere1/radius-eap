@@ -55,6 +55,7 @@ type testContext struct {
 	protocolState map[protocol.Type]interface{}
 	endStatus     protocol.Status
 	modify        func(r, q *radius.Packet) error
+	sessionData   map[string]any
 }
 
 func (t testContext) Packet() *radius.Request { return t.packet }
@@ -100,6 +101,19 @@ func (t testContext) State() string { return "" }
 
 func (t testContext) Log() protocol.Logger { return t.log }
 
+func (t testContext) SessionValue(key string) any {
+	if t.sessionData == nil {
+		return nil
+	}
+	return t.sessionData[key]
+}
+
+func (t testContext) SetSessionValue(key string, value any) {
+	if t.sessionData != nil {
+		t.sessionData[key] = value
+	}
+}
+
 type recordingContext struct {
 	mu        sync.Mutex
 	endStatus protocol.Status
@@ -136,6 +150,10 @@ func (c *recordingContext) EndInnerProtocol(status protocol.Status) {
 func (c *recordingContext) State() string { return "" }
 
 func (c *recordingContext) Log() protocol.Logger { return eap.DefaultLogger() }
+
+func (c *recordingContext) SessionValue(string) any { return nil }
+
+func (c *recordingContext) SetSessionValue(string, any) {}
 
 func (c *recordingContext) recordedStatus() protocol.Status {
 	c.mu.Lock()
@@ -196,38 +214,8 @@ func TestDecodeRejectsUnexpectedStartFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "unexpected start flag")
 }
 
-func TestSetExpectedWriterByteCountTracksInitialFragment(t *testing.T) {
-	conn := &BuffConn{
-		reader:           bytes.NewBuffer(make([]byte, 900)),
-		writer:           bytes.NewBuffer(nil),
-		ctx:              context.Background(),
-		writtenByteCount: 900,
-		log:              eap.DefaultLogger(),
-	}
-	p := &Payload{
-		Flags:  FlagLengthIncluded | FlagMoreFragments,
-		Length: 1800,
-		st: &State{
-			Conn: conn,
-		},
-	}
-
-	p.updateExpectedWriterByteCount(testContext{log: eap.DefaultLogger()})
-
-	assert.Equal(t, 1800, conn.expectedWriterByteCount)
-
-	conn.writtenByteCount = 1800
-	p.updateExpectedWriterByteCount(testContext{log: eap.DefaultLogger()})
-	assert.Zero(t, conn.expectedWriterByteCount)
-}
-
 func TestHandleReturnsEmptyAckForIncompletePeerFragment(t *testing.T) {
-	conn := &BuffConn{
-		reader: bytes.NewBuffer(nil),
-		writer: bytes.NewBuffer(nil),
-		ctx:    context.Background(),
-		log:    eap.DefaultLogger(),
-	}
+	conn := NewBuffConn(context.Background(), testContext{log: eap.DefaultLogger()})
 	st := &State{
 		Conn:   conn,
 		TLS:    &tls.Conn{},
@@ -252,17 +240,13 @@ func TestHandleReturnsEmptyAckForIncompletePeerFragment(t *testing.T) {
 	assert.Equal(t, FlagNone, ack.Flags)
 	assert.Zero(t, ack.Length)
 	assert.Empty(t, ack.Data)
-	assert.Equal(t, 1800, conn.expectedWriterByteCount)
-	assert.True(t, conn.NeedsMoreData())
+	// The reassembler has buffered the first fragment and still expects the rest.
+	assert.Equal(t, 1800, st.reassembler.expected)
+	assert.Zero(t, conn.InboundLen())
 }
 
 func TestSendNextChunkOnlyFirstFragmentIncludesLength(t *testing.T) {
-	conn := &BuffConn{
-		reader: bytes.NewBuffer(nil),
-		writer: bytes.NewBuffer(nil),
-		ctx:    context.Background(),
-		log:    eap.DefaultLogger(),
-	}
+	conn := NewBuffConn(context.Background(), testContext{log: eap.DefaultLogger()})
 	p := &Payload{
 		st: &State{
 			Logger:                      eap.DefaultLogger(),
@@ -440,6 +424,43 @@ func TestTLSHandshakeFinished_DoesNotQueueProtectedSuccessIndicatorForTLS12(t *t
 	assert.Equal(t, protocol.StatusSuccess, p.st.FinalStatusValue())
 }
 
+// RFC 9190 Section 2.5: when the certificate is valid but the consumer denies
+// authorization (HandshakeSuccessful → StatusError), the server MUST NOT emit
+// the TLS 1.3 protected success indication. Doing so would tell a TLS 1.3
+// supplicant (e.g. Windows 11) that it succeeded immediately before EAP-Failure.
+func TestTLSHandshakeFinished_NoSuccessIndicatorWhenAuthorizationDenied(t *testing.T) {
+	serverConn, clientConn, recorder := newRecordedMutualTLSPair(t, tls.VersionTLS13)
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+	recorder.Reset()
+
+	innerCtx := testContext{log: eap.DefaultLogger()}
+	p := &Payload{
+		st: &State{
+			TLS:           serverConn,
+			HandshakeCtx:  innerCtx,
+			ContextCancel: func() {},
+		},
+	}
+	ctx := testContext{
+		log: eap.DefaultLogger(),
+		settings: Settings{
+			Config: &tls.Config{},
+			HandshakeSuccessful: func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status {
+				return protocol.StatusError // authenticated, but authorization denied
+			},
+		},
+	}
+
+	p.tlsHandshakeFinished(ctx)
+
+	assert.Empty(t, recorder.Bytes(), "no 0x00 commitment may be written on authorization failure")
+	assert.True(t, p.st.HandshakeDoneValue())
+	assert.Equal(t, protocol.StatusError, p.st.FinalStatusValue())
+}
+
 func TestOutboundPayload_HandshakeFailureWithoutDataReturnsNil(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -447,7 +468,7 @@ func TestOutboundPayload_HandshakeFailureWithoutDataReturnsNil(t *testing.T) {
 
 	payload := &Payload{
 		st: &State{
-			Conn:   NewBuffConn(nil, ctx, protoCtx),
+			Conn:   NewBuffConn(ctx, protoCtx),
 			Logger: eap.DefaultLogger(),
 		},
 	}
@@ -463,7 +484,7 @@ func TestOutboundPayload_HandshakeFailureWithBufferedAlertReturnsNil(t *testing.
 	defer cancel()
 	protoCtx := &recordingContext{}
 
-	conn := NewBuffConn(nil, ctx, protoCtx)
+	conn := NewBuffConn(ctx, protoCtx)
 	_, err := conn.Write([]byte{0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x2a})
 	require.NoError(t, err)
 
@@ -485,7 +506,7 @@ func TestHandleReturnsNilWhenInnerProtocolFinishesWithoutPayload(t *testing.T) {
 	payload := &Payload{
 		Inner: &nilInnerPayload{},
 		st: &State{
-			Conn:   NewBuffConn(nil, context.Background(), protoCtx),
+			Conn:   NewBuffConn(context.Background(), protoCtx),
 			Logger: eap.DefaultLogger(),
 		},
 	}

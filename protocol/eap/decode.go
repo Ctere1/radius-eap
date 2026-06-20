@@ -6,6 +6,11 @@ import (
 	"github.com/Ctere1/radius-eap/protocol"
 )
 
+// EmptyPayload resolves an offered EAP Type to a fresh method payload (EAP type
+// negotiation, RFC 3748 Section 5). It returns the constructor whose Type matches, or —
+// for a tunneling method that wraps an inner payload (e.g. PEAP, a tls.Payload
+// whose HasInner is the PEAP payload) — the outer payload together with the
+// inner Type code that must appear on the wire. It errors on an unsupported type.
 func EmptyPayload(settings protocol.Settings, t protocol.Type) (protocol.Payload, protocol.Type, error) {
 	for _, cons := range settings.Protocols {
 		np := cons()

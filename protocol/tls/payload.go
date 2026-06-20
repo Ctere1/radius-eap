@@ -13,7 +13,6 @@ import (
 
 	"github.com/Ctere1/radius-eap/debug"
 	"github.com/Ctere1/radius-eap/protocol"
-	"github.com/avast/retry-go/v4"
 	"layeh.com/radius"
 	"layeh.com/radius/vendors/microsoft"
 )
@@ -90,6 +89,13 @@ func (p *Payload) Encode() ([]byte, error) {
 	return buff, nil
 }
 
+// Handle advances the EAP-TLS exchange by one RADIUS round-trip: on first call
+// it starts the TLS handshake (tlsInit), then on each call it feeds the
+// reassembled peer flight to the background handshake goroutine, waits for the
+// goroutine's response without polling, fragments and returns the outbound
+// flight, and on completion resolves the final status — or, when wrapped by
+// PEAP, delegates the protected channel to the inner protocol. See _RFC.md for
+// the concurrency model.
 func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	defer func() {
 		ctx.SetProtocolState(TypeTLS, p.st)
@@ -104,29 +110,37 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	}
 	p.st = ctx.GetProtocolState(TypeTLS).(*State)
 
-	if p.st.TLS == nil {
-		p.tlsInit(ctx)
+	if p.st.TLS == nil && !p.st.HandshakeDoneValue() {
+		// First peer flight (ClientHello). Reassemble any fragments before
+		// starting the TLS state machine.
+		flight, needMore, err := p.st.reassembler.accept(p.Flags, p.Length, p.Data, maxTLSMessageSize(ctx))
+		if err != nil {
+			return p.failReassembly(ctx, err)
+		}
+		if needMore {
+			return ackPayload()
+		}
+		if !p.tlsInit(ctx) {
+			return nil
+		}
+		p.feedAndWait(flight)
 	} else if len(p.Data) > 0 {
 		ctx.Log().Debug("TLS: Updating buffer with new TLS data from packet")
-		p.st.Conn.UpdateData(p.Data)
-		p.updateExpectedWriterByteCount(ctx)
-		if !p.st.Conn.NeedsMoreData() && !p.st.HandshakeDoneValue() {
-			// Wait for outbound data to be available
-			p.st.Conn.OutboundData()
+		flight, needMore, err := p.st.reassembler.accept(p.Flags, p.Length, p.Data, maxTLSMessageSize(ctx))
+		if err != nil {
+			return p.failReassembly(ctx, err)
 		}
-	}
-	// If we need more data, send the client the go-ahead
-	if p.st.Conn.NeedsMoreData() {
-		return &Payload{
-			Flags:  FlagNone,
-			Length: 0,
-			Data:   []byte{},
+		if needMore {
+			// Acknowledge the partial fragment and wait for the rest.
+			return ackPayload()
 		}
+		p.feedAndWait(flight)
 	}
+
 	if p.st.HasMore() {
 		return p.sendNextChunk()
 	}
-	if p.st.Conn.writer.Len() == 0 && p.st.HandshakeDoneValue() {
+	if p.st.Conn.OutboundLen() == 0 && p.st.HandshakeDoneValue() {
 		if p.Inner == nil && p.failOnUnexpectedPostHandshakeClientData(ctx) {
 			return nil
 		}
@@ -135,52 +149,89 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 			if !p.innerHandler(ctx) {
 				return nil
 			}
-			return p.startChunkedTransfer(p.st.Conn.OutboundData())
+			return p.startChunkedTransfer(p.st.Conn.HarvestFlight())
 		}
 		defer p.st.ContextCancel()
 		ctx.Log().Debug(
 			"TLS: Handshake done, awaiting final status",
 			"final_status", p.st.FinalStatusValue(),
 			"context_err", p.st.Context.Err(),
-			"writer_len", p.st.Conn.writer.Len(),
-			"reader_len", p.st.Conn.reader.Len(),
+			"outbound_len", p.st.Conn.OutboundLen(),
+			"inbound_len", p.st.Conn.InboundLen(),
 		)
-		// If we don't have a final status from the handshake finished function, stall for time
-		pst, err := retry.DoWithData(
-			func() (protocol.Status, error) {
-				ctx.Log().Debug(
-					"TLS: polling final status",
-					"final_status", p.st.FinalStatusValue(),
-					"context_err", p.st.Context.Err(),
-				)
-				finalStatus := p.st.FinalStatusValue()
-				if finalStatus == protocol.StatusUnknown {
-					return finalStatus, errStall
-				}
-				return finalStatus, nil
-			},
-			retry.Context(p.st.Context),
-			retry.Delay(10*time.Microsecond),
-			retry.DelayType(retry.BackOffDelay),
-			retry.MaxDelay(100*time.Millisecond),
-			retry.Attempts(0),
-		)
-		if err != nil || pst == protocol.StatusUnknown {
-			ctx.Log().Warn(
-				"TLS: final status unresolved after handshake; converting to error to avoid invalid bare EAP request",
-				"final_status", pst,
-				"retry_error", err,
-				"context_err", p.st.Context.Err(),
-				"writer_len", p.st.Conn.writer.Len(),
-				"reader_len", p.st.Conn.reader.Len(),
-			)
-			pst = protocol.StatusError
-			p.st.SetFinalStatus(protocol.StatusError)
-		}
+		pst := p.awaitFinalStatus(ctx)
 		ctx.EndInnerProtocol(pst)
 		return nil
 	}
 	return p.outboundPayload(ctx)
+}
+
+// ackPayload returns the empty EAP-TLS acknowledgement used to request the next
+// peer fragment.
+func ackPayload() *Payload {
+	return &Payload{
+		Flags:  FlagNone,
+		Length: 0,
+		Data:   []byte{},
+	}
+}
+
+// feedAndWait delivers a complete peer flight to the TLS goroutine and, while
+// the handshake is still in progress, waits (without polling) until that
+// goroutine has produced its response flight or reached a terminal state.
+func (p *Payload) feedAndWait(flight []byte) {
+	p.st.Conn.FeedFlight(flight)
+	if !p.st.HandshakeDoneValue() {
+		p.st.Conn.WaitOutbound(p.st.HandshakeDoneCh, p.st.HandshakeErrCh)
+	}
+}
+
+// failReassembly aborts the exchange when a peer message violates the configured
+// maximum size (DoS hardening) or is otherwise malformed.
+func (p *Payload) failReassembly(ctx protocol.Context, err error) protocol.Payload {
+	ctx.Log().Warn("TLS: rejecting fragmented message", "error", err)
+	p.st.SetFinalStatus(protocol.StatusError)
+	if p.st.ContextCancel != nil {
+		p.st.ContextCancel()
+	}
+	p.st.signalHandshakeError()
+	ctx.EndInnerProtocol(protocol.StatusError)
+	return nil
+}
+
+// awaitFinalStatus blocks (without polling) until the background handshake
+// goroutine has published a final status, then returns it. An unresolved status
+// is converted to an error to avoid emitting an invalid bare EAP request.
+func (p *Payload) awaitFinalStatus(ctx protocol.Context) protocol.Status {
+	if p.st.FinalStatusValue() == protocol.StatusUnknown {
+		select {
+		case <-p.st.HandshakeDoneCh:
+		case <-p.st.HandshakeErrCh:
+		case <-p.st.Context.Done():
+		}
+	}
+	pst := p.st.FinalStatusValue()
+	if pst == protocol.StatusUnknown {
+		ctx.Log().Warn(
+			"TLS: final status unresolved after handshake; converting to error to avoid invalid bare EAP request",
+			"context_err", p.st.Context.Err(),
+			"outbound_len", p.st.Conn.OutboundLen(),
+			"inbound_len", p.st.Conn.InboundLen(),
+		)
+		pst = protocol.StatusError
+		p.st.SetFinalStatus(protocol.StatusError)
+	}
+	return pst
+}
+
+// maxTLSMessageSize returns the consumer-configured maximum reassembled EAP-TLS
+// message size, if the protocol settings expose one (both tls.Settings and
+// peap.Settings may implement it); otherwise 0 selects the package default.
+func maxTLSMessageSize(ctx protocol.Context) int {
+	if m, ok := ctx.ProtocolSettings().(interface{ MaxTLSMessageSize() int }); ok {
+		return m.MaxTLSMessageSize()
+	}
+	return 0
 }
 
 func (p *Payload) failOnUnexpectedPostHandshakeClientData(ctx protocol.Context) bool {
@@ -188,7 +239,7 @@ func (p *Payload) failOnUnexpectedPostHandshakeClientData(ctx protocol.Context) 
 		return false
 	}
 
-	unread := p.st.Conn.reader.Bytes()
+	unread := p.st.Conn.PeekInbound()
 	if len(unread) == 0 {
 		return false
 	}
@@ -206,7 +257,7 @@ func (p *Payload) failOnUnexpectedPostHandshakeClientData(ctx protocol.Context) 
 
 	if hasOnlyTLSApplicationDataRecords(unread) {
 		ctx.Log().Warn("TLS: tolerating benign post-handshake client TLS application data", logArgs...)
-		p.st.Conn.reader.Reset()
+		p.st.Conn.ResetInbound()
 		return false
 	}
 
@@ -245,17 +296,17 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	return p.st.HandshakeCtx.ModifyRADIUSResponse(r, q)
 }
 
-func (p *Payload) tlsInit(ctx protocol.Context) {
+func (p *Payload) tlsInit(ctx protocol.Context) bool {
 	ctx.Log().Debug("TLS: no TLS connection in state yet, starting connection")
 	p.st.Context, p.st.ContextCancel = context.WithTimeout(context.Background(), staleConnectionTimeout*time.Second)
-	p.st.Conn = NewBuffConn(p.Data, p.st.Context, ctx)
-	p.updateExpectedWriterByteCount(ctx)
+	p.st.Conn = NewBuffConn(p.st.Context, ctx)
 	tlsSettings, ok := ctx.ProtocolSettings().(TLSConfig)
 	if !ok || tlsSettings.TLSConfig() == nil {
 		ctx.Log().Error("TLS: invalid protocol settings")
 		p.st.SetFinalStatus(protocol.StatusError)
+		p.st.signalHandshakeError()
 		ctx.EndInnerProtocol(protocol.StatusError)
-		return
+		return false
 	}
 	cfg := tlsSettings.TLSConfig().Clone()
 	settings, _ := ctx.ProtocolSettings().(Settings)
@@ -285,21 +336,23 @@ func (p *Payload) tlsInit(ctx protocol.Context) {
 			if p.st.ContextCancel != nil {
 				p.st.ContextCancel()
 			}
+			p.st.signalHandshakeError()
 			ctx.EndInnerProtocol(protocol.StatusError)
 			return
 		}
 		ctx.Log().Debug("TLS: handshake done")
 		p.tlsHandshakeFinished(ctx)
 	}()
+	return true
 }
 
 func (p *Payload) outboundPayload(ctx protocol.Context) protocol.Payload {
-	data := p.st.Conn.OutboundData()
+	p.st.Conn.WaitOutbound(p.st.HandshakeDoneCh, p.st.HandshakeErrCh)
 	if p.st.FinalStatusValue() == protocol.StatusError && !p.st.HandshakeDoneValue() {
 		ctx.EndInnerProtocol(protocol.StatusError)
 		return nil
 	}
-	return p.startChunkedTransfer(data)
+	return p.startChunkedTransfer(p.st.Conn.HarvestFlight())
 }
 
 func applyContextTLSHooks(cfg *tls.Config, ctx protocol.Context, settings Settings) {
@@ -368,30 +421,52 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 			p.st.ContextCancel()
 		}
 		p.st.SetFinalStatus(protocol.StatusError)
+		p.st.signalHandshakeError()
 		ctx.EndInnerProtocol(protocol.StatusError)
 		return
 	}
 	p.st.MPPEKey = ksm
-	if err := p.queueProtectedSuccessIndicator(ctx, cs); err != nil {
-		ctx.Log().Warn("failed to queue protected success indication", "error", err)
-		if p.st.ContextCancel != nil {
-			p.st.ContextCancel()
-		}
-		p.st.SetFinalStatus(protocol.StatusError)
-		ctx.EndInnerProtocol(protocol.StatusError)
-		return
-	}
-	p.st.SetHandshakeDone(true)
+
+	// For EAP-TLS (no inner method) the TLS handshake authenticates the peer, but
+	// the consumer's HandshakeSuccessful callback still makes the authorization
+	// decision (revoked cert, disabled user, policy reject, ...). Run it BEFORE
+	// emitting any result indication so we never send the RFC 9190 Section 2.5 protected
+	// success commitment to a peer we are about to reject — doing so would tell a
+	// TLS 1.3 supplicant (e.g. Windows 11) that authentication succeeded just
+	// before the EAP-Failure, corrupting its state machine.
 	if p.Inner == nil {
 		settings, ok := ctx.ProtocolSettings().(Settings)
 		if !ok || settings.HandshakeSuccessful == nil {
 			ctx.Log().Error("TLS: missing handshake callback in protocol settings")
+			if p.st.ContextCancel != nil {
+				p.st.ContextCancel()
+			}
 			p.st.SetFinalStatus(protocol.StatusError)
+			p.st.signalHandshakeError()
 			ctx.EndInnerProtocol(protocol.StatusError)
 			return
 		}
-		p.st.SetFinalStatus(settings.HandshakeSuccessful(p.st.HandshakeCtx, cs.PeerCertificates))
+		status := settings.HandshakeSuccessful(p.st.HandshakeCtx, cs.PeerCertificates)
+		if status == protocol.StatusSuccess {
+			// RFC 9190 Section 2.5: send the TLS 1.3 protected success indication only
+			// once the peer is both authenticated and authorized.
+			if err := p.queueProtectedSuccessIndicator(ctx, cs); err != nil {
+				ctx.Log().Warn("failed to queue protected success indication", "error", err)
+				if p.st.ContextCancel != nil {
+					p.st.ContextCancel()
+				}
+				p.st.SetFinalStatus(protocol.StatusError)
+				p.st.signalHandshakeError()
+				ctx.EndInnerProtocol(protocol.StatusError)
+				return
+			}
+		}
+		p.st.SetFinalStatus(status)
 	}
+	p.st.SetHandshakeDone(true)
+	// Publish completion last, after MPPE keys and final status are set, so a
+	// handler observing the closed channel always sees a consistent state.
+	p.st.signalHandshakeDone()
 }
 
 func (p *Payload) queueProtectedSuccessIndicator(ctx protocol.Context, cs tls.ConnectionState) error {
@@ -412,7 +487,6 @@ func (p *Payload) startChunkedTransfer(data []byte) *Payload {
 		return p.sendNextChunk()
 	}
 	p.st.Logger.Debug("TLS: Sending data un-chunked", "length", len(data))
-	p.st.Conn.writer.Reset()
 	return &Payload{
 		Flags:  FlagLengthIncluded,
 		Length: uint32(len(data)),
@@ -433,10 +507,9 @@ func (p *Payload) sendNextChunk() *Payload {
 		p.st.Logger.Debug("TLS: More chunks left", "chunks", len(p.st.RemainingChunks))
 		flags |= FlagMoreFragments
 	} else {
-		// Last chunk, reset the connection buffers and pending payload size
+		// Last chunk: clear the pending payload size and fragmentation markers.
 		defer func() {
 			p.st.Logger.Debug("TLS: Sent last chunk")
-			p.st.Conn.writer.Reset()
 			p.st.TotalPayloadSize = 0
 			p.st.IncludeLengthInNextFragment = false
 		}()
@@ -446,16 +519,6 @@ func (p *Payload) sendNextChunk() *Payload {
 		Flags:  flags,
 		Length: uint32(p.st.TotalPayloadSize),
 		Data:   nextChunk,
-	}
-}
-
-func (p *Payload) updateExpectedWriterByteCount(ctx protocol.Context) {
-	if p.Flags&FlagLengthIncluded == 0 || p.st == nil || p.st.Conn == nil {
-		return
-	}
-	p.st.Conn.SetExpectedWriterByteCount(int(p.Length), len(p.Data))
-	if p.st.Conn.expectedWriterByteCount > 0 {
-		ctx.Log().Debug("TLS: Expecting total bytes, will buffer", "total", p.Length)
 	}
 }
 

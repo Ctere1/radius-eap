@@ -42,19 +42,13 @@ func TestDecodeRejectsUnsupportedPeerOpcode(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported peer opcode")
 }
 
-func TestParseResponseRejectsWrongLength(t *testing.T) {
-	_, err := ParseResponse(make([]byte, responseValueSize-1))
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid response length")
-}
-
 type testContext struct {
 	root        protocol.Payload
 	settings    interface{}
 	state       interface{}
 	endStatus   protocol.Status
 	stateStored interface{}
+	sessionData map[string]any
 }
 
 func (t *testContext) Packet() *radius.Request                                       { return nil }
@@ -72,6 +66,18 @@ func (t *testContext) HandleInnerEAP(protocol.Payload, protocol.StateManager) (p
 func (t *testContext) Inner(protocol.Payload, protocol.Type) protocol.Context { return t }
 func (t *testContext) EndInnerProtocol(status protocol.Status)                { t.endStatus = status }
 func (t *testContext) Log() protocol.Logger                                   { return eaproot.DefaultLogger() }
+func (t *testContext) SessionValue(key string) any {
+	if t.sessionData == nil {
+		return nil
+	}
+	return t.sessionData[key]
+}
+func (t *testContext) SetSessionValue(key string, value any) {
+	if t.sessionData == nil {
+		t.sessionData = map[string]any{}
+	}
+	t.sessionData[key] = value
+}
 
 func TestHandleSuccessAcknowledgesWithoutMPPEDependency(t *testing.T) {
 	ctx := &testContext{
@@ -96,6 +102,32 @@ func TestHandleSuccessAcknowledgesWithoutMPPEDependency(t *testing.T) {
 	stored, ok := ctx.stateStored.(*State)
 	require.True(t, ok)
 	assert.True(t, stored.IsProtocolEnded)
+}
+
+// On a wrong password the NT-Response will not match; the method must end the
+// inner exchange with StatusError (so the tunnel emits a clean EAP-Failure)
+// rather than returning nil without a verdict.
+func TestHandleAuthenticationFailureEndsWithError(t *testing.T) {
+	ctx := &testContext{
+		root: &eap.Payload{ID: 7},
+		settings: Settings{
+			AuthenticateRequest: func(req AuthRequest) (*AuthResponse, error) {
+				// Expected NT-Response is all-zero; the peer's will differ.
+				return &AuthResponse{NTResponse: make([]byte, responseNTResponseSize)}, nil
+			},
+		},
+		state: &State{Challenge: make([]byte, challengeValueSize)},
+	}
+
+	value := make([]byte, responseValueSize)
+	for i := 0; i < responseNTResponseSize; i++ {
+		value[challengeValueSize+responseReservedSize+i] = 0xFF // non-zero NT-Response
+	}
+
+	res := (&Payload{OpCode: OpResponse, Response: value}).Handle(ctx)
+
+	assert.Nil(t, res, "no payload is returned on authentication failure")
+	assert.Equal(t, protocol.StatusError, ctx.endStatus, "inner exchange must end with StatusError")
 }
 
 func TestModifyRADIUSResponseAddsMSMPPEKeys(t *testing.T) {

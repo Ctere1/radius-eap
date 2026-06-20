@@ -14,6 +14,10 @@ type Packet struct {
 	responseModifiers []protocol.ResponseModifier
 }
 
+// Decode parses the raw EAP-Message bytes from a RADIUS Access-Request into a
+// Packet ready for HandleRadiusPacket. The StateManager supplies the method
+// settings used to resolve the inner method payload. It returns an error if the
+// bytes are not a well-formed EAP packet.
 func Decode(stm protocol.StateManager, raw []byte) (*Packet, error) {
 	packet := &Packet{
 		eap: &eap.Payload{
@@ -29,6 +33,8 @@ func Decode(stm protocol.StateManager, raw []byte) (*Packet, error) {
 	return packet, nil
 }
 
+// Encode serializes the packet's EAP payload into the bytes to place in the
+// outbound EAP-Message attribute.
 func (p *Packet) Encode() ([]byte, error) {
 	return p.eap.Encode()
 }
