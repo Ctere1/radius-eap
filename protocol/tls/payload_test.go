@@ -53,7 +53,6 @@ type testContext struct {
 	settings      interface{}
 	packet        *radius.Request
 	protocolState map[protocol.Type]interface{}
-	endStatus     protocol.Status
 	modify        func(r, q *radius.Packet) error
 	sessionData   map[string]any
 }
@@ -548,42 +547,6 @@ func TestModifyRADIUSResponseAddsMPPEKeysWithoutLegacyAttributesByDefault(t *tes
 	assert.Equal(t, keyMaterial[64:96], microsoft.MSMPPESendKey_Get(res, req))
 	assert.Equal(t, microsoft.MSMPPEEncryptionPolicy(0), microsoft.MSMPPEEncryptionPolicy_Get(res))
 	assert.Equal(t, microsoft.MSMPPEEncryptionTypes(0), microsoft.MSMPPEEncryptionTypes_Get(res))
-}
-
-func newMutualTLSPair(t *testing.T, version uint16) (*tls.Conn, *tls.Conn) {
-	t.Helper()
-
-	caPEM, caKeyPEM, caCert := generateCertificateAuthority(t)
-	serverCert := generateLeafCertificate(t, caPEM, caKeyPEM, caCert, "server.test", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
-	clientCert := generateLeafCertificate(t, caPEM, caKeyPEM, caCert, "client.test", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
-
-	rootCAs := x509.NewCertPool()
-	require.True(t, rootCAs.AppendCertsFromPEM(caPEM))
-
-	serverSide, clientSide := net.Pipe()
-	serverConn := tls.Server(serverSide, &tls.Config{
-		Certificates: []tls.Certificate{serverCert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    rootCAs,
-		MinVersion:   version,
-		MaxVersion:   version,
-	})
-	clientConn := tls.Client(clientSide, &tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      rootCAs,
-		ServerName:   "server.test",
-		MinVersion:   version,
-		MaxVersion:   version,
-	})
-
-	errCh := make(chan error, 2)
-	go func() { errCh <- serverConn.Handshake() }()
-	go func() { errCh <- clientConn.Handshake() }()
-
-	require.NoError(t, <-errCh)
-	require.NoError(t, <-errCh)
-
-	return serverConn, clientConn
 }
 
 func newRecordedMutualTLSPair(t *testing.T, version uint16) (*tls.Conn, *tls.Conn, *recordingConn) {
