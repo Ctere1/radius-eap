@@ -19,6 +19,18 @@ import (
 	"layeh.com/radius/rfc3580"
 )
 
+// EAP-TLS integration tests pin the server to TLS 1.2. The eapol_test /
+// wpa_supplicant build shipped in CI (Ubuntu's eapoltest package) only offers
+// EAP-TLS over TLS 1.2 — its ClientHello advertises no TLS 1.3 — so a forced
+// TLS 1.3 handshake can never complete through eapol_test, and production uses
+// TLS 1.2 as well. The TLS 1.3 EAP-TLS paths (handshake, key export, and the
+// RFC 9190 protected-success indication) are covered deterministically by the
+// protocol-level unit tests in protocol/tls (e.g.
+// TestBuffConnDrivesRealTLSHandshake/TLS_1.3,
+// TestTLSHandshakeFinishedExportsKeysForTLS12AndTLS13/TLS_1.3,
+// TestTLSHandshakeFinished_QueuesProtectedSuccessIndicatorForTLS13Outer).
+const eapTLSIntegrationVersion = ttls.VersionTLS12
+
 func TestEAP_TLS(t *testing.T) {
 	s := NewTestServer(t)
 	// ident is written from the background TLS handshake callback and read by the
@@ -40,6 +52,8 @@ func TestEAP_TLS(t *testing.T) {
 				Config: &ttls.Config{
 					Certificates: []ttls.Certificate{s.cert},
 					ClientAuth:   ttls.RequireAnyClientCert,
+					MinVersion:   eapTLSIntegrationVersion,
+					MaxVersion:   eapTLSIntegrationVersion,
 				},
 				HandshakeSuccessful: func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status {
 					identMu.Lock()
@@ -88,6 +102,8 @@ func TestEAP_TLS_Reject(t *testing.T) {
 				Config: &ttls.Config{
 					Certificates: []ttls.Certificate{s.cert},
 					ClientAuth:   ttls.RequireAnyClientCert,
+					MinVersion:   eapTLSIntegrationVersion,
+					MaxVersion:   eapTLSIntegrationVersion,
 				},
 				HandshakeSuccessful: func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status {
 					ctx.AddResponseModifier(func(r, q *radius.Packet) error {
