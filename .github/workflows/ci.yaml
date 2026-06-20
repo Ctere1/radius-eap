@@ -28,6 +28,10 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y eapoltest
+          # Fail fast if the package did not actually provide the eapol_test
+          # binary the integration tests invoke — otherwise those tests would
+          # silently t.Skip and we'd lose EAP coverage behind a green run.
+          which eapol_test
       - run: go build -v ./...
       - run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
@@ -53,6 +57,10 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y eapoltest
+          # Fail fast if the package did not actually provide the eapol_test
+          # binary the integration tests invoke — otherwise those tests would
+          # silently t.Skip and we'd lose EAP coverage behind a green run.
+          which eapol_test
       - run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 \
