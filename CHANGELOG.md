@@ -18,6 +18,13 @@ Patch release fixing issues surfaced by the new `-race` CI job on 0.2.0.
   `ProtocolState`/`SetProtocolState`/`IsProtocolStart`.
 - Lint: removed unused TLS test helpers so `golangci-lint` is clean.
 
+### Changed
+
+- Refactored the EAP state machine (`handler.go`) for clarity: the duplicated
+  method-dispatch path was collapsed into one, and helpers were extracted
+  (`buildContext`, `samePayloadType`, `applyEndStatus`, `radiusCodeForEAP`). Pure
+  refactor — no wire-protocol, RFC-semantics, or behavior change.
+
 ## [0.2.0] - 2026-06-20
 
 A reliability, security, and documentation release. EAP-TLS/PEAP are now
