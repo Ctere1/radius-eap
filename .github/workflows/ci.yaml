@@ -31,7 +31,14 @@ jobs:
       - run: go build -v ./...
       - run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew install --cask beryju/tap/crtls
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 \
+                 HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          # `brew install --cask` can exit non-zero with "Error: Broken pipe"
+          # from its post-install chatter even though the cask installs and links
+          # the binary correctly. Don't let that spurious failure fail the job;
+          # gate on the binary actually being present instead.
+          brew install --cask beryju/tap/crtls || true
+          command -v crtls
           make test
       - uses: codecov/codecov-action@v5
         with:
@@ -48,5 +55,10 @@ jobs:
           sudo apt-get install -y eapoltest
       - run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew install --cask beryju/tap/crtls
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 \
+                 HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          # See the test job above: tolerate brew's spurious "Broken pipe" exit
+          # and gate on the crtls binary being present.
+          brew install --cask beryju/tap/crtls || true
+          command -v crtls
           make test-race
