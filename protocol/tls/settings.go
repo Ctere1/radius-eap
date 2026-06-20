@@ -33,8 +33,17 @@ type Settings struct {
 	// HandshakeSuccessful runs after the TLS handshake has completed and the EAP
 	// layer is ready to decide whether the authenticated client should proceed.
 	HandshakeSuccessful func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status
+	// MaxMessageSize bounds a single reassembled EAP-TLS message (one peer
+	// flight). Zero selects the package default (64 KiB). It guards against a
+	// malicious peer declaring an enormous fragmented message (RFC 5216 Section 3.1).
+	MaxMessageSize int
 }
 
 func (s Settings) TLSConfig() *tls.Config {
 	return s.Config
+}
+
+// MaxTLSMessageSize exposes the configured reassembly bound to the TLS layer.
+func (s Settings) MaxTLSMessageSize() int {
+	return s.MaxMessageSize
 }
