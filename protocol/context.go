@@ -32,6 +32,11 @@ type Context interface {
 	SetProtocolState(p Type, s interface{})
 	IsProtocolStart(p Type) bool
 
+	// SessionValue / SetSessionValue access the session-scoped store shared by
+	// every protocol handled under the same RADIUS State (see State.SessionData).
+	SessionValue(key string) any
+	SetSessionValue(key string, value any)
+
 	ResponseModifier
 	AddResponseModifier(func(r, q *radius.Packet) error)
 

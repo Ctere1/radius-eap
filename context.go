@@ -13,6 +13,7 @@ type context struct {
 	rootPayload protocol.Payload
 	state       string
 	typeState   map[protocol.Type]any
+	session     *protocol.State
 	log         protocol.Logger
 	settings    interface{}
 	parent      *context
@@ -31,7 +32,19 @@ func (ctx *context) ProtocolSettings() any                    { return ctx.setti
 func (ctx *context) GetProtocolState(p protocol.Type) any     { return ctx.typeState[p] }
 func (ctx *context) SetProtocolState(p protocol.Type, st any) { ctx.typeState[p] = st }
 func (ctx *context) IsProtocolStart(p protocol.Type) bool     { return ctx.typeState[p] == nil }
-func (ctx *context) Log() protocol.Logger                     { return ctx.log }
+func (ctx *context) SessionValue(key string) any {
+	if ctx.session == nil {
+		return nil
+	}
+	return ctx.session.SessionValue(key)
+}
+func (ctx *context) SetSessionValue(key string, value any) {
+	if ctx.session == nil {
+		return
+	}
+	ctx.session.SetSessionValue(key, value)
+}
+func (ctx *context) Log() protocol.Logger { return ctx.log }
 func (ctx *context) HandleInnerEAP(p protocol.Payload, st protocol.StateManager) (protocol.Payload, error) {
 	return ctx.handleInner(p, st, ctx)
 }
@@ -62,6 +75,7 @@ func (ctx *context) Inner(p protocol.Payload, t protocol.Type) protocol.Context 
 		rootPayload: ctx.rootPayload,
 		state:       ctx.state,
 		typeState:   ctx.typeState,
+		session:     ctx.session,
 		log:         ctx.log.With("type", fmt.Sprintf("%T", p), "code", t),
 		settings:    ctx.settings,
 		parent:      ctx,
