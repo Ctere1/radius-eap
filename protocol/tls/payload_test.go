@@ -500,6 +500,37 @@ func TestOutboundPayload_HandshakeFailureWithBufferedAlertReturnsNil(t *testing.
 	assert.Equal(t, protocol.StatusError, protoCtx.recordedStatus())
 }
 
+// TestOutboundPayload_HandshakeDoneWithoutDataResolvesStatus guards the
+// defense-in-depth half of the v0.2.2 fix: when WaitOutbound wakes after the
+// handshake has completed but there is nothing left to send, outboundPayload
+// must resolve the final status and return nil — never emit a bare zero-length
+// EAP-TLS data packet (FlagLengthIncluded, Length 0), which stalls the
+// supplicant.
+func TestOutboundPayload_HandshakeDoneWithoutDataResolvesStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	protoCtx := &recordingContext{}
+
+	st := &State{
+		Conn:            NewBuffConn(ctx, protoCtx),
+		Context:         ctx,
+		ContextCancel:   cancel,
+		HandshakeDoneCh: make(chan struct{}),
+		HandshakeErrCh:  make(chan struct{}),
+		Logger:          eap.DefaultLogger(),
+	}
+	st.SetFinalStatus(protocol.StatusSuccess)
+	st.SetHandshakeDone(true)
+	st.signalHandshakeDone() // WaitOutbound returns WaitHandshakeDone with empty outbound
+
+	payload := &Payload{st: st}
+
+	got := payload.outboundPayload(protoCtx)
+
+	assert.Nil(t, got, "must not emit a bare zero-length EAP-TLS packet")
+	assert.Equal(t, protocol.StatusSuccess, protoCtx.recordedStatus())
+}
+
 func TestHandleReturnsNilWhenInnerProtocolFinishesWithoutPayload(t *testing.T) {
 	protoCtx := &selectiveStartContext{recordingContext: &recordingContext{}}
 	payload := &Payload{
