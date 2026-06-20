@@ -248,20 +248,48 @@ func TestBuffConnPartialReads(t *testing.T) {
 	assert.Zero(t, bc.InboundLen())
 }
 
-func TestBuffConnFlightBoundarySignalParkedRead(t *testing.T) {
+// TestWaitOutboundIgnoresTransientReadPark is the regression guard for the
+// intermittent EAP-TLS stall fixed in v0.2.2. A parked Read with empty
+// inbound/outbound is NOT a flight boundary: crypto/tls parks in Read mid-
+// handshake (notably a TLS 1.2 full handshake reads the client Finished before
+// writing the server Finished), and treating that as a boundary harvested an
+// empty outbound and emitted a bare zero-length EAP-TLS request that stalled the
+// supplicant. WaitOutbound must keep blocking until real outbound bytes appear.
+func TestWaitOutboundIgnoresTransientReadPark(t *testing.T) {
 	bc := NewBuffConn(context.Background(), testContext{log: eap.DefaultLogger()})
 
+	// Simulate the crypto/tls goroutine parking in Read with empty inbound.
 	read := make(chan struct{})
 	go func() {
 		_, _ = bc.Read(make([]byte, 8))
 		close(read)
 	}()
-
-	// Once the Read parks, WaitOutbound must observe the flight boundary.
 	require.Eventually(t, bc.ReadWaiting, time.Second, time.Millisecond)
-	assert.Equal(t, WaitFlightBoundary, bc.WaitOutbound(nil, nil))
 
-	bc.FeedFlight([]byte{0x01})
+	// WaitOutbound must NOT report a boundary yet — there is no outbound.
+	done := make(chan struct{})
+	errc := make(chan struct{})
+	got := make(chan WaitOutcome, 1)
+	go func() { got <- bc.WaitOutbound(done, errc) }()
+	select {
+	case oc := <-got:
+		t.Fatalf("WaitOutbound returned %v during a transient read-park; expected it to block", oc)
+	case <-time.After(100 * time.Millisecond):
+		// Correct: still blocked because no outbound bytes exist.
+	}
+
+	// Once the server writes its flight, WaitOutbound must wake with a boundary.
+	if _, err := bc.Write([]byte{0x16, 0x03, 0x03}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	select {
+	case oc := <-got:
+		assert.Equal(t, WaitFlightBoundary, oc)
+	case <-time.After(time.Second):
+		t.Fatal("WaitOutbound did not wake after the outbound Write")
+	}
+
+	bc.FeedFlight([]byte{0x01}) // unpark the Read goroutine
 	select {
 	case <-read:
 	case <-time.After(time.Second):

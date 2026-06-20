@@ -5,6 +5,32 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (0.x: the minor
 version is bumped for features and breaking changes).
 
+## [0.2.2] - 2026-06-20
+
+Patch release fixing an intermittent EAP-TLS handshake-completion race
+introduced by the 0.2.1 channel-based `BuffConn` rewrite.
+
+### Fixed
+
+- **Intermittent EAP-TLS stall / client re-authentication** (most visible on
+  **TLS 1.2** full handshakes). `BuffConn.WaitOutbound` treated a transient
+  parked `Read` (empty inbound, empty outbound) as a flight boundary. In a
+  TLS 1.2 full handshake the server reads the client's `Finished` *before*
+  writing its own `ChangeCipherSpec`/`Finished`, so `crypto/tls` can park in
+  `Read` mid-completion; the false boundary made the handler harvest an empty
+  outbound and emit a **bare zero-length EAP-TLS request** (`0d8000000000`), or
+  race `SetHandshakeDone` into a **premature EAP-Success** before the server's
+  final flight was flushed. Either way the supplicant could not finish key
+  derivation and re-authenticated (~13s later). `WaitOutbound` now blocks until
+  real outbound bytes, handshake completion, an error, or the stale-connection
+  timeout. (`protocol/tls/buff_conn.go`)
+- **Defense-in-depth**: `outboundPayload` no longer emits a zero-length
+  length-flagged EAP-TLS data packet when there is nothing to send; it resolves
+  the final status (or ends as error) instead. (`protocol/tls/payload.go`)
+
+The EAP-TLS keying path (`ExportKeyingMaterial`, MS-MPPE-Recv/Send keys) is
+unchanged; this is purely a transport-framing/timing fix.
+
 ## [0.2.1] - 2026-06-20
 
 Patch release fixing issues surfaced by the new `-race` CI job on 0.2.0.

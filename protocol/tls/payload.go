@@ -352,7 +352,39 @@ func (p *Payload) outboundPayload(ctx protocol.Context) protocol.Payload {
 		ctx.EndInnerProtocol(protocol.StatusError)
 		return nil
 	}
-	return p.startChunkedTransfer(p.st.Conn.HarvestFlight())
+	out := p.st.Conn.HarvestFlight()
+	if len(out) == 0 {
+		// WaitOutbound returned with no bytes to send. Never emit a bare
+		// zero-length EAP-TLS data packet (FlagLengthIncluded, Length 0) — that
+		// is an invalid record-less request that stalls the supplicant. Resolve
+		// through the terminal paths instead, mirroring the handshake-done branch
+		// in Handle.
+		if p.st.HandshakeDoneValue() {
+			if p.Inner == nil && p.failOnUnexpectedPostHandshakeClientData(ctx) {
+				return nil
+			}
+			defer p.st.ContextCancel()
+			pst := p.awaitFinalStatus(ctx)
+			ctx.EndInnerProtocol(pst)
+			return nil
+		}
+		// Woke without outbound and the handshake is neither done nor errored:
+		// the wait ended on context cancellation / connection close (the stale
+		// connection timeout backstop). End as an error rather than send an
+		// invalid bare request.
+		ctx.Log().Warn(
+			"TLS: outbound wait ended with no data and handshake not done; ending as error",
+			"context_err", p.st.Context.Err(),
+			"inbound_len", p.st.Conn.InboundLen(),
+		)
+		p.st.SetFinalStatus(protocol.StatusError)
+		if p.st.ContextCancel != nil {
+			p.st.ContextCancel()
+		}
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return nil
+	}
+	return p.startChunkedTransfer(out)
 }
 
 func applyContextTLSHooks(cfg *tls.Config, ctx protocol.Context, settings Settings) {

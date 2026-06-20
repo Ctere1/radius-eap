@@ -172,10 +172,18 @@ func (c *BuffConn) WaitOutbound(done, errc <-chan struct{}) WaitOutcome {
 			c.mu.Unlock()
 			return WaitFlightBoundary
 		}
-		if c.readWaiting && len(c.inbound) == 0 {
-			c.mu.Unlock()
-			return WaitFlightBoundary
-		}
+		// NOTE: a parked Read with empty inbound/outbound is NOT a flight
+		// boundary. crypto/tls consumes a peer flight record-by-record and can
+		// park in Read transiently mid-handshake before it has written its
+		// response — most notably in a TLS 1.2 full handshake, where the server
+		// reads the client's Finished BEFORE writing its own ChangeCipherSpec +
+		// Finished. Treating that transient park as a boundary harvests an empty
+		// outbound and emits a bare zero-length EAP-TLS request (0d8000000000),
+		// or races SetHandshakeDone into a premature EAP-Success before the
+		// server's final flight is flushed — causing the supplicant to stall and
+		// re-authenticate. A real boundary is reliably signalled by outbound
+		// bytes (above), handshake completion (done), an error, or the stale
+		// connection timeout (ctx); block until one of those occurs.
 		wait := c.notify
 		c.mu.Unlock()
 
