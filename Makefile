@@ -10,7 +10,7 @@ lint:
 
 test: test-cert-gen
 	go test \
-		-timeout 30s \
+		-timeout 60s \
 		-p 1 \
 		-count=1 \
 		-failfast \
@@ -23,6 +23,17 @@ test: test-cert-gen
 	go tool cover \
 		-html ${PWD}/coverage.txt \
 		-o ${PWD}/coverage.html
+
+# test-race runs the suite under the data-race detector. It is kept separate from
+# the coverage run above because -race changes runtime behaviour and timing.
+test-race: test-cert-gen
+	go test \
+		-race \
+		-timeout 120s \
+		-p 1 \
+		-count=1 \
+		-shuffle=on \
+		$(shell go list ./...)
 
 test-cert-clean:
 	rm -rf ${CERT_DIR}

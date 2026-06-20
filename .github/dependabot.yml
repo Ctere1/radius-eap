@@ -5,10 +5,10 @@ updates:
     schedule:
       interval: "daily"
     assignees:
-      - BeryJu
+      - Ctere1
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "daily"
     assignees:
-      - BeryJu
+      - Ctere1

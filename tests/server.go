@@ -6,8 +6,8 @@ import (
 	"errors"
 	"net"
 	"path/filepath"
-	"sync"
 	"testing"
+	"time"
 
 	eap "github.com/Ctere1/radius-eap"
 	"github.com/Ctere1/radius-eap/protocol"
@@ -16,12 +16,14 @@ import (
 	"layeh.com/radius/rfc2869"
 )
 
+// Server is a minimal RADIUS test harness driving the EAP library end-to-end via
+// eapol_test. It uses the library's MemoryStateManager so the integration path
+// exercises the same session store recommended to consumers.
 type Server struct {
-	rs       radius.PacketServer
-	mu       sync.RWMutex
-	eapState map[string]*protocol.State
-	cert     ttls.Certificate
-	config   protocol.Settings
+	rs     radius.PacketServer
+	cert   ttls.Certificate
+	config protocol.Settings
+	states *eap.MemoryStateManager
 }
 
 func NewTestServer(t *testing.T) *Server {
@@ -29,9 +31,7 @@ func NewTestServer(t *testing.T) *Server {
 	requireTestAsset(t, filepath.Join("certs", "cert_server.pem"))
 	requireTestAsset(t, filepath.Join("certs", "cert_server.key"))
 
-	s := &Server{
-		eapState: map[string]*protocol.State{},
-	}
+	s := &Server{}
 	s.rs = radius.PacketServer{
 		Handler:      s,
 		SecretSource: s,
@@ -44,6 +44,8 @@ func NewTestServer(t *testing.T) *Server {
 }
 
 func (s *Server) Run(ctx context.Context) {
+	// config is populated by the test before Run; build the StateManager here.
+	s.states = eap.NewMemoryStateManager(s.config, 5*time.Minute)
 	go func() {
 		err := s.rs.ListenAndServe()
 		if errors.Is(err, radius.ErrServerShutdown) {
@@ -54,6 +56,7 @@ func (s *Server) Run(ctx context.Context) {
 	}()
 	go func() {
 		<-ctx.Done()
+		s.states.Close()
 		err := s.rs.Shutdown(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			panic(err)
@@ -68,26 +71,10 @@ func (s *Server) RADIUSSecret(ctx context.Context, remoteAddr net.Addr) ([]byte,
 func (s *Server) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 	ep := rfc2869.EAPMessage_Get(r.Packet)
 	if len(ep) > 0 {
-		ep, err := eap.Decode(s, ep)
+		pkt, err := eap.Decode(s.states, ep)
 		if err != nil {
 			panic(err)
 		}
-		ep.HandleRadiusPacket(w, r)
+		pkt.HandleRadiusPacket(w, r)
 	}
-}
-
-func (s *Server) GetEAPState(key string) *protocol.State {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.eapState[key]
-}
-
-func (s *Server) SetEAPState(key string, state *protocol.State) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.eapState[key] = state
-}
-
-func (s *Server) GetEAPSettings() protocol.Settings {
-	return s.config
 }
