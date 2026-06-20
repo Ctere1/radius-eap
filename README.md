@@ -1,31 +1,72 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/Ctere1/radius-eap)](https://goreportcard.com/report/github.com/Ctere1/radius-eap)
 [![pkg.go.dev](https://pkg.go.dev/badge/github.com/Ctere1/radius-eap)](https://pkg.go.dev/github.com/Ctere1/radius-eap)
 
-# About
+# radius-eap
 
-A minimal and pragmatic implementation of common **EAP** methods for **RADIUS**, designed for experimentation, learning, and integration.
+A production-oriented implementation of common **EAP** methods for **RADIUS** in
+Go — **race-free**, **state-safe**, and tested clause-by-clause against the
+relevant RFCs.
 
-- Forked from [github.com/BeryJu/radius-eap](https://github.com/BeryJu/radius-eap)
-- In-depth write-up: [Implementing EAP](https://beryju.io/blog/2025-05-implementing-eap/) by **BeryJu**
+## Supported methods
 
-Thanks to **BeryJu** for the original implementation and the excellent blog post.
+| EAP method           | Type | Specification                  |
+| -------------------- | ---- | ------------------------------ |
+| Identity             | 1    | RFC 3748 Section 5.1           |
+| Legacy Nak           | 3    | RFC 3748 Section 5.3.1         |
+| GTC (OTP, in-tunnel) | 6    | RFC 3748 Section 5.6           |
+| EAP-TLS              | 13   | RFC 5216 / RFC 9190            |
+| PEAP (PEAPv0)        | 25   | draft-josefsson / draft-kamath |
+| MS-CHAP-v2           | 26   | RFC 2759 / RFC 3079            |
 
-# EAP protocol implementation
+## Documentation
 
-Install `eapol_test` (`sudo apt install eapoltest`)
+Architecture and per-protocol RFC references live in [`_RFC.md`](_RFC.md), which
+indexes a detailed document (with diagrams) for each protocol. Start there to see
+how a protocol works and which file/function implements which RFC clause.
 
-Both PEAP and EAP-TLS require a minimal PKI setup. A CA, a certificate for the server and for EAP-TLS a client certificate need to be provided.
+## Usage
 
-Save either of the config files below and run eapoltest like so:
+Implement `protocol.StateManager` (or use the bundled
+`eap.NewMemoryStateManager`, a concurrency-safe store with TTL eviction), then
+decode the EAP-Message from each RADIUS request and let the library drive the
+exchange:
 
+```go
+sm := eap.NewMemoryStateManager(settings, 5*time.Minute)
+defer sm.Close()
+
+func (s *Server) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
+    raw := rfc2869.EAPMessage_Get(r.Packet)
+    if len(raw) == 0 {
+        return
+    }
+    pkt, err := eap.Decode(sm, raw)
+    if err != nil {
+        return
+    }
+    pkt.HandleRadiusPacket(w, r) // writes Access-Challenge/Accept/Reject
+}
 ```
-# peap.conf is the config file under the PEAP testing section
-# foo is the shared RADIUS secret
-# 1.2.3.4 is the IP of the RADIUS server
-eapol_test -c peap.conf -s foo -a 1.2.3.4
+
+See [`examples/server`](examples/server) for a complete EAP-TLS + PEAP-MSCHAPv2
+server.
+
+## Testing
+
+```sh
+make test       # unit tests + eapol_test integration
+make test-race  # the full suite under the race detector
 ```
 
-### PEAP testing
+Integration tests use `eapol_test` (`sudo apt install eapoltest`) and a minimal
+PKI (a CA, a server certificate, and — for EAP-TLS — a client certificate). Run a
+client against the server with:
+
+```sh
+eapol_test -c peap.conf -s foo -a <radius-server-ip>
+```
+
+### PEAP (phase 2: MS-CHAP-v2)
 
 ```
 network={
@@ -39,7 +80,7 @@ network={
 }
 ```
 
-### EAP-TLS testing
+### EAP-TLS
 
 ```
 network={
@@ -54,3 +95,11 @@ network={
     eap_workaround=0
 }
 ```
+
+## Acknowledgements
+
+Originally forked from [BeryJu/radius-eap](https://github.com/BeryJu/radius-eap);
+see BeryJu's write-up [Implementing EAP](https://beryju.io/blog/2025-05-implementing-eap/).
+This fork has since been substantially reworked (race-free EAP-TLS transport,
+session-safe state handling, DoS hardening, RFC documentation, and expanded
+tests).
