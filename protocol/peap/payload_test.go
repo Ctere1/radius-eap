@@ -19,6 +19,7 @@ type testContext struct {
 	state       interface{}
 	endStatus   protocol.Status
 	stateStored interface{}
+	sessionData map[string]any
 	handleInner func(protocol.Payload, protocol.StateManager) (protocol.Payload, error)
 }
 
@@ -40,6 +41,18 @@ func (t *testContext) HandleInnerEAP(p protocol.Payload, sm protocol.StateManage
 func (t *testContext) Inner(protocol.Payload, protocol.Type) protocol.Context { return t }
 func (t *testContext) EndInnerProtocol(status protocol.Status)                { t.endStatus = status }
 func (t *testContext) Log() protocol.Logger                                   { return eaproot.DefaultLogger() }
+func (t *testContext) SessionValue(key string) any {
+	if t.sessionData == nil {
+		return nil
+	}
+	return t.sessionData[key]
+}
+func (t *testContext) SetSessionValue(key string, value any) {
+	if t.sessionData == nil {
+		t.sessionData = map[string]any{}
+	}
+	t.sessionData[key] = value
+}
 
 func TestHandleTracksProtectedResultRequest(t *testing.T) {
 	ctx := &testContext{

@@ -89,6 +89,11 @@ func (p *Payload) eapInnerDecode(ctx protocol.Context) (*eap.Payload, error) {
 	return ep, nil
 }
 
+// Handle runs the PEAP tunnel (phase 2). On start it requests the inner
+// identity; thereafter it decodes each protected inner-EAP packet, dispatches it
+// to the configured inner method, and wraps the reply. It also manages the
+// protected Result TLV acknowledgement that cryptographically finalizes the
+// authentication result (see _RFC.md).
 func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	defer func() {
 		ctx.SetProtocolState(TypePEAP, p.st)
@@ -152,11 +157,20 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 	res, err := ctx.HandleInnerEAP(ep, p)
 	if err != nil {
 		ctx.Log().Warn("PEAP: failed to handle inner EAP", "error", err)
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return nil
+	}
+	pres := res.(*eap.Payload)
+	// The inner method concluded without a payload to tunnel — e.g. an
+	// authentication failure that already ended the inner exchange with an error
+	// status. There is nothing to encode inside the tunnel; let the outer EAP
+	// layer emit the terminal EAP-Failure (EndInnerProtocol is idempotent).
+	if pres.Payload == nil {
+		ctx.EndInnerProtocol(protocol.StatusError)
 		return nil
 	}
 	// Normal payloads need to be wrapped in PEAP to use the correct encoding (see Encode() above)
 	// Extension payloads handle encoding differently
-	pres := res.(*eap.Payload)
 	if ext, ok := pres.Payload.(*ExtensionPayload); ok {
 		if status, ok := ext.ResultStatus(); ok && status == ResultStatusSuccess {
 			p.st.AwaitingResultAVPAck = true
