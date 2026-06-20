@@ -36,20 +36,11 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 	p.r = r
 	p.state = selectRequestState(r, p.stm)
 
-	rp := &Packet{r: r}
 	rep, err := p.handleEAP(p.eap, p.stm, nil)
-	rp.eap = rep
 
 	rres := r.Response(radius.CodeAccessReject)
 	if err == nil {
-		switch rp.eap.Code {
-		case protocol.CodeRequest:
-			rres.Code = radius.CodeAccessChallenge
-		case protocol.CodeFailure:
-			rres.Code = radius.CodeAccessReject
-		case protocol.CodeSuccess:
-			rres.Code = radius.CodeAccessAccept
-		}
+		rres.Code = radiusCodeForEAP(rep.Code)
 	} else {
 		rres.Code = radius.CodeAccessReject
 		l.Debug("Rejecting request", "error", err)
@@ -70,13 +61,13 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 			return
 		}
 	}
-	eapEncoded, err := rp.Encode()
+	eapEncoded, err := rep.Encode()
 	if err != nil {
 		l.Warn("failed to encode response", "error", err)
 		p.sendErrorResponse(w, r)
 		return
 	}
-	l.Debug("Root-EAP: encapsulated challenge", "length", len(eapEncoded), "type", fmt.Sprintf("%T", rp.eap.Payload))
+	l.Debug("Root-EAP: encapsulated challenge", "length", len(eapEncoded), "type", fmt.Sprintf("%T", rep.Payload))
 	err = rfc2869.EAPMessage_Set(rres, eapEncoded)
 	if err != nil {
 		l.Warn("failed to set EAP message", "error", err)
@@ -92,6 +83,20 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 	err = w.Write(rres)
 	if err != nil {
 		l.Warn("failed to send response", "error", err)
+	}
+}
+
+// radiusCodeForEAP maps a resulting EAP Code to the RADIUS response code:
+// Request→Access-Challenge, Success→Access-Accept, Failure (and anything else)
+// →Access-Reject.
+func radiusCodeForEAP(c protocol.Code) radius.Code {
+	switch c {
+	case protocol.CodeRequest:
+		return radius.CodeAccessChallenge
+	case protocol.CodeSuccess:
+		return radius.CodeAccessAccept
+	default:
+		return radius.CodeAccessReject
 	}
 }
 
@@ -162,86 +167,87 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 		}, fmt.Errorf("load EAP payload type %d: %w", nextChallengeToOffer, err)
 	}
 
-	var ctx *context
-	if parentContext != nil {
-		ctx = parentContext.Inner(np, t).(*context)
-		ctx.settings = stm.GetEAPSettings().ProtocolSettings[np.Type()]
-	} else {
-		ctx = &context{
-			req:         p.r,
-			rootPayload: p.eap,
-			state:       p.state,
-			typeState:   st.TypeState,
-			session:     st,
-			log:         l.With("type", fmt.Sprintf("%T", np), "code", t),
-			settings:    stm.GetEAPSettings().ProtocolSettings[t],
-		}
-		ctx.handleInner = func(pp protocol.Payload, sm protocol.StateManager, ctx protocol.Context) (protocol.Payload, error) {
-			return p.handleEAP(pp, sm, ctx.(*context))
-		}
-	}
+	ctx := p.buildContext(parentContext, np, t, st, stm, l)
 	if !np.Offerable() {
 		ctx.Log().Debug("Root-EAP: protocol not offerable, skipping")
 		return next()
 	}
 	ctx.Log().Debug("Root-EAP: Passing to protocol")
 
-	res := &eap.Payload{
-		Code:    protocol.CodeRequest,
-		ID:      p.eap.ID + 1,
-		MsgType: t,
-	}
-	var payload any
-	if reflect.TypeOf(incoming.Payload) != reflect.TypeOf(np) {
-		if ctx.IsProtocolStart(np.Type()) {
-			payload = np.Handle(ctx)
-			if payload != nil {
-				res.Payload = payload.(protocol.Payload)
-			}
-			stm.SetEAPState(p.state, st)
-			if rm, ok := np.(protocol.ResponseModifier); ok {
-				ctx.log.Debug("Root-EAP: Registered response modifier")
-				p.responseModifiers = append(p.responseModifiers, rm)
-			}
-			switch ctx.EndStatus() {
-			case protocol.StatusSuccess:
-				res.Code = protocol.CodeSuccess
-				res.ID -= 1
-			case protocol.StatusError:
-				res.Code = protocol.CodeFailure
-				res.ID -= 1
-			case protocol.StatusNextProtocol:
-				ctx.log.Debug("Root-EAP: Protocol ended, starting next protocol")
-				return next()
-			case protocol.StatusUnknown:
-			}
-			return res, nil
-		}
+	// Decode the peer's payload only when it actually carries this method's data.
+	// A different payload type is valid only when we are just now starting this
+	// method (the peer is still answering the previous one); otherwise it is a
+	// protocol error.
+	sameType := samePayloadType(incoming.Payload, np)
+	if !sameType && !ctx.IsProtocolStart(np.Type()) {
 		return &eap.Payload{
 			Code: protocol.CodeFailure,
 			ID:   incoming.ID,
 		}, fmt.Errorf("unexpected EAP payload type %T, expected %T", incoming.Payload, np)
 	}
-	err = np.Decode(incoming.RawPayload)
-	if err != nil {
-		return &eap.Payload{
-			Code: protocol.CodeFailure,
-			ID:   incoming.ID,
-		}, fmt.Errorf("decode EAP payload %T: %w", np, err)
-	}
-	payload = np.Handle(ctx)
-	if payload != nil {
-		res.Payload = payload.(protocol.Payload)
+	if sameType {
+		if err := np.Decode(incoming.RawPayload); err != nil {
+			return &eap.Payload{
+				Code: protocol.CodeFailure,
+				ID:   incoming.ID,
+			}, fmt.Errorf("decode EAP payload %T: %w", np, err)
+		}
 	}
 
+	res := &eap.Payload{
+		Code:    protocol.CodeRequest,
+		ID:      p.eap.ID + 1,
+		MsgType: t,
+	}
+	if payload := np.Handle(ctx); payload != nil {
+		res.Payload = payload
+	}
 	stm.SetEAPState(p.state, st)
-
 	if rm, ok := np.(protocol.ResponseModifier); ok {
 		ctx.log.Debug("Root-EAP: Registered response modifier")
 		p.responseModifiers = append(p.responseModifiers, rm)
 	}
+	if applyEndStatus(res, ctx.EndStatus()) {
+		ctx.log.Debug("Root-EAP: Protocol ended, starting next protocol")
+		return next()
+	}
+	return res, nil
+}
 
-	switch ctx.EndStatus() {
+// buildContext creates the protocol.Context for handling np. Inner methods (PEAP
+// phase 2) derive from the parent context; outer methods get a fresh root
+// context wired with the inner-EAP dispatch closure.
+func (p *Packet) buildContext(parentContext *context, np protocol.Payload, t protocol.Type, st *protocol.State, stm protocol.StateManager, l protocol.Logger) *context {
+	if parentContext != nil {
+		ctx := parentContext.Inner(np, t).(*context)
+		ctx.settings = stm.GetEAPSettings().ProtocolSettings[np.Type()]
+		return ctx
+	}
+	ctx := &context{
+		req:         p.r,
+		rootPayload: p.eap,
+		state:       p.state,
+		session:     st,
+		log:         l.With("type", fmt.Sprintf("%T", np), "code", t),
+		settings:    stm.GetEAPSettings().ProtocolSettings[t],
+	}
+	ctx.handleInner = func(pp protocol.Payload, sm protocol.StateManager, ic protocol.Context) (protocol.Payload, error) {
+		return p.handleEAP(pp, sm, ic.(*context))
+	}
+	return ctx
+}
+
+// samePayloadType reports whether the peer's decoded payload is the same concrete
+// type as the method we are about to handle.
+func samePayloadType(a, b protocol.Payload) bool {
+	return reflect.TypeOf(a) == reflect.TypeOf(b)
+}
+
+// applyEndStatus maps a method's terminal Status onto the outbound EAP packet
+// (Success/Failure echo the Response Identifier, RFC 3748 Section 4.2) and
+// reports whether the driver should advance to the next protocol.
+func applyEndStatus(res *eap.Payload, status protocol.Status) (advance bool) {
+	switch status {
 	case protocol.StatusSuccess:
 		res.Code = protocol.CodeSuccess
 		res.ID -= 1
@@ -249,11 +255,10 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 		res.Code = protocol.CodeFailure
 		res.ID -= 1
 	case protocol.StatusNextProtocol:
-		ctx.log.Debug("Root-EAP: Protocol ended, starting next protocol")
-		return next()
+		return true
 	case protocol.StatusUnknown:
 	}
-	return res, nil
+	return false
 }
 
 // setMessageAuthenticator computes the RFC 2869 Message-Authenticator

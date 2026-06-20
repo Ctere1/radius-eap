@@ -5,6 +5,26 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (0.x: the minor
 version is bumped for features and breaking changes).
 
+## [0.2.1] - 2026-06-20
+
+Patch release fixing issues surfaced by the new `-race` CI job on 0.2.0.
+
+### Fixed
+
+- **Data race** on the per-session protocol-state map
+  (`protocol.State.TypeState`): it was accessed both by the request handler and
+  by the background TLS handshake goroutine (the `VerifyConnection` /
+  `HandshakeSuccessful` callbacks). It is now mutex-guarded via
+  `ProtocolState`/`SetProtocolState`/`IsProtocolStart`.
+- Lint: removed unused TLS test helpers so `golangci-lint` is clean.
+
+### Changed
+
+- Refactored the EAP state machine (`handler.go`) for clarity: the duplicated
+  method-dispatch path was collapsed into one, and helpers were extracted
+  (`buildContext`, `samePayloadType`, `applyEndStatus`, `radiusCodeForEAP`). Pure
+  refactor — no wire-protocol, RFC-semantics, or behavior change.
+
 ## [0.2.0] - 2026-06-20
 
 A reliability, security, and documentation release. EAP-TLS/PEAP are now

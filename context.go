@@ -12,7 +12,6 @@ type context struct {
 	req         *radius.Request
 	rootPayload protocol.Payload
 	state       string
-	typeState   map[protocol.Type]any
 	session     *protocol.State
 	log         protocol.Logger
 	settings    interface{}
@@ -25,13 +24,28 @@ type context struct {
 	modifiers   []func(*radius.Packet, *radius.Packet) error
 }
 
-func (ctx *context) RootPayload() protocol.Payload            { return ctx.rootPayload }
-func (ctx *context) Packet() *radius.Request                  { return ctx.req }
-func (ctx *context) State() string                            { return ctx.state }
-func (ctx *context) ProtocolSettings() any                    { return ctx.settings }
-func (ctx *context) GetProtocolState(p protocol.Type) any     { return ctx.typeState[p] }
-func (ctx *context) SetProtocolState(p protocol.Type, st any) { ctx.typeState[p] = st }
-func (ctx *context) IsProtocolStart(p protocol.Type) bool     { return ctx.typeState[p] == nil }
+func (ctx *context) RootPayload() protocol.Payload { return ctx.rootPayload }
+func (ctx *context) Packet() *radius.Request       { return ctx.req }
+func (ctx *context) State() string                 { return ctx.state }
+func (ctx *context) ProtocolSettings() any         { return ctx.settings }
+func (ctx *context) GetProtocolState(p protocol.Type) any {
+	if ctx.session == nil {
+		return nil
+	}
+	return ctx.session.ProtocolState(p)
+}
+func (ctx *context) SetProtocolState(p protocol.Type, st any) {
+	if ctx.session == nil {
+		return
+	}
+	ctx.session.SetProtocolState(p, st)
+}
+func (ctx *context) IsProtocolStart(p protocol.Type) bool {
+	if ctx.session == nil {
+		return true
+	}
+	return ctx.session.IsProtocolStart(p)
+}
 func (ctx *context) SessionValue(key string) any {
 	if ctx.session == nil {
 		return nil
@@ -74,7 +88,6 @@ func (ctx *context) Inner(p protocol.Payload, t protocol.Type) protocol.Context 
 		req:         ctx.req,
 		rootPayload: ctx.rootPayload,
 		state:       ctx.state,
-		typeState:   ctx.typeState,
 		session:     ctx.session,
 		log:         ctx.log.With("type", fmt.Sprintf("%T", p), "code", t),
 		settings:    ctx.settings,

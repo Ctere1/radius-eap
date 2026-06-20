@@ -12,9 +12,8 @@ import (
 
 func newTestContext() *context {
 	return &context{
-		session:   protocol.BlankState(protocol.Settings{}),
-		typeState: map[protocol.Type]any{},
-		log:       DefaultLogger(),
+		session: protocol.BlankState(protocol.Settings{}),
+		log:     DefaultLogger(),
 	}
 }
 

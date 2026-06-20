@@ -275,8 +275,8 @@ func TestHandleRadiusPacket_RejectsMisconfiguredProtocolPriority(t *testing.T) {
 
 func TestContextModifyRADIUSResponseExecutesAllRegisteredModifiers(t *testing.T) {
 	root := &context{
-		typeState: map[protocol.Type]any{},
-		log:       DefaultLogger(),
+		session: protocol.BlankState(protocol.Settings{}),
+		log:     DefaultLogger(),
 	}
 	child := root.Inner(&terminalPayload{}, terminalProtocolType).(*context)
 

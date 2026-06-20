@@ -25,7 +25,14 @@ type State struct {
 	Protocols        []ProtocolConstructor
 	ProtocolIndex    int
 	ProtocolPriority []Type
-	TypeState        map[Type]any
+	// TypeState holds each method's per-session state. It is shared by every
+	// protocol handled under the same RADIUS State and is accessed both by the
+	// request handler and by the background TLS handshake goroutine (via the
+	// VerifyConnection / HandshakeSuccessful callbacks), so it must only be
+	// touched through ProtocolState/SetProtocolState/IsProtocolStart, which guard
+	// it with typeMu.
+	TypeState map[Type]any
+	typeMu    sync.RWMutex
 	// SessionData is a free-form, session-scoped store shared across every
 	// protocol (outer and inner) handled under the same RADIUS State. Consumers
 	// use Context.SessionValue/SetSessionValue to stash request-spanning data
@@ -54,6 +61,33 @@ func (st *State) SetSessionValue(key string, value any) {
 		st.SessionData = map[string]any{}
 	}
 	st.SessionData[key] = value
+}
+
+// ProtocolState returns the stored state for a method type (nil if none). Safe
+// for concurrent use.
+func (st *State) ProtocolState(t Type) any {
+	st.typeMu.RLock()
+	defer st.typeMu.RUnlock()
+	return st.TypeState[t]
+}
+
+// SetProtocolState stores the state for a method type, lazily allocating the
+// backing map. Safe for concurrent use.
+func (st *State) SetProtocolState(t Type, v any) {
+	st.typeMu.Lock()
+	defer st.typeMu.Unlock()
+	if st.TypeState == nil {
+		st.TypeState = map[Type]any{}
+	}
+	st.TypeState[t] = v
+}
+
+// IsProtocolStart reports whether a method has no stored state yet. Safe for
+// concurrent use.
+func (st *State) IsProtocolStart(t Type) bool {
+	st.typeMu.RLock()
+	defer st.typeMu.RUnlock()
+	return st.TypeState[t] == nil
 }
 
 func (st *State) GetNextProtocol() (Type, error) {

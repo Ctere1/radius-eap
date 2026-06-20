@@ -5,6 +5,7 @@ import (
 	ttls "crypto/tls"
 	"crypto/x509"
 	"strings"
+	"sync"
 	"testing"
 
 	eap "github.com/Ctere1/radius-eap"
@@ -20,7 +21,12 @@ import (
 
 func TestEAP_TLS(t *testing.T) {
 	s := NewTestServer(t)
-	ident := ""
+	// ident is written from the background TLS handshake callback and read by the
+	// test goroutine, so guard it.
+	var (
+		identMu sync.Mutex
+		ident   string
+	)
 	s.config = protocol.Settings{
 		Logger: eap.DefaultLogger(),
 		Protocols: []protocol.ProtocolConstructor{
@@ -36,7 +42,9 @@ func TestEAP_TLS(t *testing.T) {
 					ClientAuth:   ttls.RequireAnyClientCert,
 				},
 				HandshakeSuccessful: func(ctx protocol.Context, certs []*x509.Certificate) protocol.Status {
+					identMu.Lock()
 					ident = ctx.GetProtocolState(identity.TypeIdentity).(*identity.State).Identity
+					identMu.Unlock()
 					ctx.AddResponseModifier(func(r, q *radius.Packet) error {
 						_ = rfc2868.TunnelType_Set(r, 0x01, rfc3580.TunnelType_Value_VLAN)
 						_ = rfc2868.TunnelMediumType_Set(r, 0x01, rfc2868.TunnelMediumType_Value_IEEE802)
@@ -56,7 +64,10 @@ func TestEAP_TLS(t *testing.T) {
 	tr, st := EAPOLTest(t, "config/eap_tls.conf")
 	assert.Equal(t, 0, st)
 	assert.Equal(t, "SUCCESS", tr[len(tr)-2])
-	assert.Equal(t, "foo", ident)
+	identMu.Lock()
+	got := ident
+	identMu.Unlock()
+	assert.Equal(t, "foo", got)
 	assert.Contains(t, strings.Join(tr, "\n"), "Attribute 64 (Tunnel-Type) length=6\n      Value: 0100000d")
 	assert.Contains(t, strings.Join(tr, "\n"), "Attribute 65 (Tunnel-Medium-Type) length=6\n      Value: 01000006")
 	assert.Contains(t, strings.Join(tr, "\n"), "Attribute 81 (Tunnel-Private-Group-Id) length=4\n      Value: 010d")
