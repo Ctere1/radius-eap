@@ -171,7 +171,6 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 			req:         p.r,
 			rootPayload: p.eap,
 			state:       p.state,
-			typeState:   st.TypeState,
 			session:     st,
 			log:         l.With("type", fmt.Sprintf("%T", np), "code", t),
 			settings:    stm.GetEAPSettings().ProtocolSettings[t],
