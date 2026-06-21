@@ -5,6 +5,7 @@ import (
 
 	eaproot "github.com/Ctere1/radius-eap"
 	"github.com/Ctere1/radius-eap/protocol"
+	"github.com/Ctere1/radius-eap/protocol/peap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"layeh.com/radius"
@@ -42,7 +43,7 @@ func (t *testContext) SetSessionValue(string, any)                            {}
 func validSettings() Settings {
 	return Settings{
 		ChallengeHandler: func(protocol.Context) (GetChallenge, ValidateResponse) {
-			return func() []byte { return nil }, func([]byte) {}
+			return func() []byte { return nil }, func([]byte) protocol.Status { return protocol.StatusUnknown }
 		},
 	}
 }
@@ -70,7 +71,7 @@ func TestDecodeStoresRawResponse(t *testing.T) {
 		protocolDone: true,
 		state: &State{
 			getChallenge:     func() []byte { return []byte("again") },
-			validateResponse: func(answer []byte) { got = answer },
+			validateResponse: func(answer []byte) protocol.Status { got = answer; return protocol.StatusUnknown },
 		},
 	}
 	p.Handle(ctx)
@@ -81,7 +82,7 @@ func TestHandleStartIssuesChallenge(t *testing.T) {
 	ctx := &testContext{
 		settings: Settings{
 			ChallengeHandler: func(protocol.Context) (GetChallenge, ValidateResponse) {
-				return func() []byte { return []byte("Enter OTP:") }, func([]byte) {}
+				return func() []byte { return []byte("Enter OTP:") }, func([]byte) protocol.Status { return protocol.StatusUnknown }
 			},
 		},
 	}
@@ -95,14 +96,17 @@ func TestHandleStartIssuesChallenge(t *testing.T) {
 	assert.NotNil(t, ctx.stateStored, "GTC state must be persisted")
 }
 
-func TestHandleResponseRevalidatesAndReissues(t *testing.T) {
+// TestHandleResponseUndecidedReissues covers the retry path: an undecided answer
+// (StatusUnknown) re-issues the challenge for another attempt without ending the
+// inner method.
+func TestHandleResponseUndecidedReissues(t *testing.T) {
 	validated := false
 	ctx := &testContext{
 		settings:     validSettings(),
 		protocolDone: true,
 		state: &State{
 			getChallenge:     func() []byte { return []byte("Enter OTP:") },
-			validateResponse: func([]byte) { validated = true },
+			validateResponse: func([]byte) protocol.Status { validated = true; return protocol.StatusUnknown },
 		},
 	}
 	p := &Payload{}
@@ -111,7 +115,48 @@ func TestHandleResponseRevalidatesAndReissues(t *testing.T) {
 	out := p.Handle(ctx)
 	assert.True(t, validated)
 	require.NotNil(t, out)
-	assert.Equal(t, []byte("Enter OTP:"), out.(*Payload).Challenge)
+	resp, ok := out.(*Payload)
+	require.True(t, ok)
+	assert.Equal(t, []byte("Enter OTP:"), resp.Challenge)
+	assert.Equal(t, protocol.StatusUnknown, ctx.endStatus, "an undecided answer must not end the inner method")
+}
+
+// TestHandleResponseSuccessEmitsResultTLV covers the accept path: a successful
+// answer returns a protected success Result TLV (AVPAckResult = success) for PEAP
+// to forward, rather than another challenge.
+func TestHandleResponseSuccessEmitsResultTLV(t *testing.T) {
+	ctx := &testContext{
+		settings:     validSettings(),
+		protocolDone: true,
+		state: &State{
+			getChallenge:     func() []byte { return []byte("unused") },
+			validateResponse: func([]byte) protocol.Status { return protocol.StatusSuccess },
+		},
+	}
+	out := (&Payload{}).Handle(ctx)
+	require.NotNil(t, out)
+	ext, ok := out.(*peap.ExtensionPayload)
+	require.True(t, ok, "success must emit a PEAP Extension (Result TLV) payload")
+	status, ok := ext.ResultStatus()
+	require.True(t, ok)
+	assert.Equal(t, peap.ResultStatusSuccess, status)
+}
+
+// TestHandleResponseErrorEndsProtocol covers the reject path: a definitively
+// rejected answer ends the inner method (so the tunnel emits EAP-Failure) and
+// returns no payload.
+func TestHandleResponseErrorEndsProtocol(t *testing.T) {
+	ctx := &testContext{
+		settings:     validSettings(),
+		protocolDone: true,
+		state: &State{
+			getChallenge:     func() []byte { return []byte("unused") },
+			validateResponse: func([]byte) protocol.Status { return protocol.StatusError },
+		},
+	}
+	out := (&Payload{}).Handle(ctx)
+	assert.Nil(t, out)
+	assert.Equal(t, protocol.StatusError, ctx.endStatus)
 }
 
 func TestHandleRejectsInvalidSettings(t *testing.T) {

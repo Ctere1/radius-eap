@@ -119,8 +119,15 @@ func eapSettings(cert ttls.Certificate) protocol.Settings {
 							ChallengeHandler: func(ctx protocol.Context) (gtc.GetChallenge, gtc.ValidateResponse) {
 								return func() []byte {
 										return []byte("Enter OTP:")
-									}, func(response []byte) {
+									}, func(response []byte) protocol.Status {
 										fmt.Printf("GTC Response: %s\n", string(response))
+										// Demo: accept any non-empty answer. Return
+										// StatusError to reject, or StatusUnknown to
+										// re-prompt for another attempt.
+										if len(response) == 0 {
+											return protocol.StatusError
+										}
+										return protocol.StatusSuccess
 									}
 							},
 						},

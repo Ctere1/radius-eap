@@ -5,6 +5,67 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (0.x: the minor
 version is bumped for features and breaking changes).
 
+## [0.3.0] - 2026-06-21
+
+Makes **EAP-GTC** (one-time password inside the PEAP tunnel) actually terminate.
+Until now the inner GTC exchange could never complete and re-challenged forever;
+this release fixes the result signalling and, in doing so, changes the
+`gtc.ValidateResponse` signature (breaking).
+
+### Fixed
+
+- **EAP-GTC never completed (infinite re-challenge).** The `getChallenge` /
+  `validateResponse` closures returned by `Settings.ChallengeHandler` capture the
+  `protocol.Context` from the round in which the handler first ran. On every
+  later round the GTC payload re-invoked the *captured* closure, so a
+  `ctx.EndInnerProtocol(...)` call inside `validateResponse` landed on a stale,
+  already-completed request and had no effect on the current one — the method
+  kept re-issuing the challenge and never emitted success or EAP-Failure. Unlike
+  MS-CHAPv2, whose `Handle` runs on the live context each round, GTC delegated to
+  these context-less callbacks. `gtc.Payload.Handle` now applies the validator's
+  decision against the **current** context. (`protocol/gtc/payload.go`)
+
+### Changed
+
+- **BREAKING: `gtc.ValidateResponse` now returns `protocol.Status`**
+  (`func(answer []byte) protocol.Status`, was `func(answer []byte)`). Consumers
+  return the outcome instead of calling `ctx.EndInnerProtocol` themselves:
+  - `StatusSuccess` → GTC emits a protected success **Result TLV**
+    (`peap.ExtensionPayload`, `AVPAckResult = success`); PEAP forwards it, awaits
+    the peer's acknowledgement, and ends successfully — the same completion path
+    as MS-CHAPv2.
+  - `StatusError` → the method ends on the current context and the tunnel emits
+    EAP-Failure.
+  - `StatusUnknown` → the challenge is re-issued (enables OTP retry).
+  (`protocol/gtc/settings.go`, `protocol/gtc/payload.go`)
+
+### Added
+
+- GTC OTP **retry** support: returning `StatusUnknown` re-prompts within the same
+  tunnel, so consumers can allow a bounded number of attempts before rejecting.
+- Tests for all three `ValidateResponse` outcomes (success → Result TLV, error →
+  `EndInnerProtocol`, undecided → re-challenge). (`protocol/gtc/payload_test.go`)
+
+### Migration
+
+Update each `gtc.ValidateResponse` to return a status and stop calling
+`ctx.EndInnerProtocol`:
+
+```go
+// before
+func(answer []byte) {
+    if ok { ctx.EndInnerProtocol(protocol.StatusSuccess) } else { ctx.EndInnerProtocol(protocol.StatusError) }
+}
+
+// after
+func(answer []byte) protocol.Status {
+    if ok {
+        return protocol.StatusSuccess
+    }
+    return protocol.StatusError // or protocol.StatusUnknown to re-challenge
+}
+```
+
 ## [0.2.2] - 2026-06-20
 
 Patch release fixing an intermittent EAP-TLS handshake-completion race
