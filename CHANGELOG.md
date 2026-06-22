@@ -5,6 +5,34 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (0.x: the minor
 version is bumped for features and breaking changes).
 
+## [0.4.0] - 2026-06-22
+
+Adds a **standalone (outer) mode** to EAP-MS-CHAP-v2 so it can run directly as the
+outer EAP method — not only as a PEAP inner method — for transports that already
+provide a protected channel (e.g. EAP-MSCHAPv2 over IKEv2/IPsec). The PEAP-inner
+behaviour is unchanged; all additions are opt-in, so this release is backward
+compatible.
+
+### Added
+
+- **Standalone EAP-MSCHAPv2 (`mschapv2.Settings.Standalone`).** When set, a
+  successful exchange ends with an outer EAP-Success (instead of the PEAP protected
+  Result TLV) and a failed one runs the MS-CHAP-V2 **Failure sub-protocol**
+  (draft-kamath §4 / RFC 2759 §6): an `OpFailure` Failure-Request carrying
+  `E=691 R=0 C=<challenge> V=3 M=…`, then an outer EAP-Failure once the peer acks.
+  New `op_failure.go` (`FailureRequest`), `State.AuthFailed`, and `Decode` now
+  accepts the peer's Failure ack. (`protocol/mschapv2`)
+- **`mschapv2.Settings.OnResult` hook.** Optional side-effect callback invoked with
+  the password verdict (`true` on NT-Response match, `false` on mismatch) so a
+  consumer can audit access/reject. It must not influence the exchange and is not
+  called for backend errors surfaced by `AuthenticateRequest`. (`protocol/mschapv2`)
+
+### Changed
+
+- NT-Response comparison now uses `crypto/subtle.ConstantTimeCompare` (was
+  `bytes.Equal`), matching the documented constant-time guarantee.
+  (`protocol/mschapv2`)
+
 ## [0.3.0] - 2026-06-21
 
 Makes **EAP-GTC** (one-time password inside the PEAP tunnel) actually terminate.
