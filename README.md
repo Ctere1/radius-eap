@@ -16,7 +16,7 @@ relevant RFCs.
 | GTC (OTP, in-tunnel) | 6    | RFC 3748 Section 5.6           |
 | EAP-TLS              | 13   | RFC 5216 / RFC 9190            |
 | PEAP (PEAPv0)        | 25   | draft-josefsson / draft-kamath |
-| MS-CHAP-v2           | 26   | RFC 2759 / RFC 3079            |
+| MS-CHAP-v2 (in-tunnel or standalone) | 26 | RFC 2759 / RFC 3079 / draft-kamath |
 
 ## Documentation
 

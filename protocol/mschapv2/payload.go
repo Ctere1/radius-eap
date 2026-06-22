@@ -1,7 +1,7 @@
 package mschapv2
 
 import (
-	"bytes"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -59,9 +59,10 @@ func (p *Payload) Decode(raw []byte) error {
 		return errors.New("MSCHAPv2: payload too short")
 	}
 	p.OpCode = OpCode(raw[0])
-	if p.OpCode == OpSuccess {
+	// Success and Failure responses from the peer carry only the OpCode byte.
+	if p.OpCode == OpSuccess || p.OpCode == OpFailure {
 		if len(raw) != 1 {
-			return fmt.Errorf("MSCHAPv2: invalid success payload length: %d", len(raw))
+			return fmt.Errorf("MSCHAPv2: invalid success/failure payload length: %d", len(raw))
 		}
 		return nil
 	}
@@ -159,15 +160,31 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 			ctx.EndInnerProtocol(protocol.StatusError)
 			return nil
 		}
-		if !bytes.Equal(auth.NTResponse, res.NTResponse) {
+		if subtle.ConstantTimeCompare(auth.NTResponse, res.NTResponse) != 1 {
 			// Normal authentication failure (wrong password), not a server error.
-			// End the inner exchange deliberately so the tunnel emits EAP-Failure
-			// instead of falling through to a spurious encode error.
 			ctx.Log().Info("MSCHAPv2: authentication failed (NT-Response mismatch)")
+			if settings.OnResult != nil {
+				settings.OnResult(ctx, false)
+			}
+			if settings.Standalone {
+				// Standalone outer EAP-MSCHAPv2: send the MS-CHAP-V2 Failure-Request
+				// (draft-kamath §4) so the supplicant gets a proper error; the outer
+				// EAP-Failure follows once the peer acks it.
+				p.st.AuthFailed = true
+				return &FailureRequest{
+					Payload: &Payload{OpCode: OpFailure, MSCHAPv2ID: rootEap.ID + 1},
+					Message: formatFailureMessage("Authentication failed"),
+				}
+			}
+			// Inner PEAP: end the inner exchange deliberately so the tunnel emits
+			// EAP-Failure instead of falling through to a spurious encode error.
 			ctx.EndInnerProtocol(protocol.StatusError)
 			return nil
 		}
 		ctx.Log().Info("MSCHAPv2: Successfully checked password")
+		if settings.OnResult != nil {
+			settings.OnResult(ctx, true)
+		}
 		p.st.AuthResponse = auth
 		succ := &SuccessRequest{
 			Payload: &Payload{
@@ -177,6 +194,14 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		}
 		return succ
 	} else if p.OpCode == OpSuccess && p.st.AuthResponse != nil {
+		if settings.Standalone {
+			// Standalone outer EAP-MSCHAPv2: the peer acked our Success-Request, so
+			// finish with an outer EAP-Success (Access-Accept). The MPPE keys are
+			// attached by ModifyRADIUSResponse. No PEAP result TLV — that is
+			// tunnel-only and meaningless on the bare outer method.
+			ctx.EndInnerProtocol(protocol.StatusSuccess)
+			return nil
+		}
 		ep := &peap.ExtensionPayload{
 			AVPs: []peap.ExtensionAVP{
 				{
@@ -188,6 +213,11 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		}
 		p.st.IsProtocolEnded = true
 		return ep
+	} else if p.OpCode == OpFailure && p.st.AuthFailed {
+		// Standalone: the peer acked our Failure-Request → outer EAP-Failure
+		// (Access-Reject).
+		ctx.EndInnerProtocol(protocol.StatusError)
+		return nil
 	} else if p.st.IsProtocolEnded {
 		ctx.EndInnerProtocol(protocol.StatusSuccess)
 		return &Payload{}

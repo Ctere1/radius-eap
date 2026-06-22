@@ -13,6 +13,21 @@ type Settings struct {
 	// available for generic consumers that only need the challenge material.
 	AuthenticateRequestWithContext func(ctx protocol.Context, req AuthRequest) (*AuthResponse, error)
 	ServerIdentifier               string
+
+	// Standalone selects the outer EAP-MSCHAPv2 flow (EAP type 26 run directly as
+	// the outer method, per draft-kamath-pppext-eap-mschapv2), rather than as a
+	// PEAP-tunnelled inner method. In standalone mode a successful exchange ends
+	// with an outer EAP-Success (instead of a PEAP result TLV) and a failed one runs
+	// the MS-CHAP-V2 Failure sub-protocol (RFC 2759 §6). Default false preserves the
+	// PEAP-inner behaviour unchanged.
+	Standalone bool
+
+	// OnResult, when set, is invoked once with the password verdict: success=true
+	// when the peer's NT-Response matched the expected one, false on mismatch. It is
+	// a side-effect hook for the consumer (e.g. access/reject auditing) and must not
+	// influence the exchange. It is NOT called for backend/credential errors raised
+	// by AuthenticateRequest(WithContext) — the consumer already has those.
+	OnResult func(ctx protocol.Context, success bool)
 }
 
 type AuthRequest struct {

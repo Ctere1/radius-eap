@@ -130,6 +130,134 @@ func TestHandleAuthenticationFailureEndsWithError(t *testing.T) {
 	assert.Equal(t, protocol.StatusError, ctx.endStatus, "inner exchange must end with StatusError")
 }
 
+// In standalone (outer EAP-MSCHAPv2) mode the peer's success ack must finish with
+// an outer EAP-Success (StatusSuccess, no payload) rather than the PEAP result TLV.
+func TestHandleStandaloneSuccessEndsWithEAPSuccess(t *testing.T) {
+	ctx := &testContext{
+		root: &eap.Payload{ID: 7},
+		settings: Settings{
+			Standalone:          true,
+			AuthenticateRequest: func(req AuthRequest) (*AuthResponse, error) { return &AuthResponse{}, nil },
+		},
+		state: &State{AuthResponse: &AuthResponse{AuthenticatorResponse: "S=ok"}},
+	}
+
+	res := (&Payload{OpCode: OpSuccess}).Handle(ctx)
+
+	assert.Nil(t, res, "standalone success returns no payload (bare EAP-Success)")
+	assert.Equal(t, protocol.StatusSuccess, ctx.endStatus)
+}
+
+// In standalone mode a wrong password must send the MS-CHAP-V2 Failure-Request
+// (E=691, RFC 2759 §6) and wait for the peer's ack — it must not end yet.
+func TestHandleStandaloneFailureSendsFailureRequest(t *testing.T) {
+	ctx := &testContext{
+		root: &eap.Payload{ID: 7},
+		settings: Settings{
+			Standalone: true,
+			AuthenticateRequest: func(req AuthRequest) (*AuthResponse, error) {
+				return &AuthResponse{NTResponse: make([]byte, responseNTResponseSize)}, nil
+			},
+		},
+		state: &State{Challenge: make([]byte, challengeValueSize)},
+	}
+
+	value := make([]byte, responseValueSize)
+	for i := 0; i < responseNTResponseSize; i++ {
+		value[challengeValueSize+responseReservedSize+i] = 0xFF // non-zero NT-Response
+	}
+
+	res := (&Payload{OpCode: OpResponse, Response: value}).Handle(ctx)
+
+	fr, ok := res.(*FailureRequest)
+	require.True(t, ok, "standalone failure returns a Failure-Request")
+	assert.Contains(t, fr.Message, "E=691")
+	assert.Contains(t, fr.Message, "R=0")
+	assert.Contains(t, fr.Message, "V=3")
+	assert.Contains(t, fr.Message, "M=Authentication failed")
+	assert.Equal(t, protocol.StatusUnknown, ctx.endStatus, "must not end yet — awaiting the peer's Failure ack")
+	stored, ok := ctx.stateStored.(*State)
+	require.True(t, ok)
+	assert.True(t, stored.AuthFailed)
+
+	encoded, err := fr.Encode()
+	require.NoError(t, err)
+	assert.Equal(t, byte(OpFailure), encoded[0])
+}
+
+// The peer's Failure ack (in standalone mode) must end the exchange with
+// StatusError → outer EAP-Failure.
+func TestHandleStandaloneFailureAckEndsWithError(t *testing.T) {
+	ctx := &testContext{
+		root: &eap.Payload{ID: 7},
+		settings: Settings{
+			Standalone:          true,
+			AuthenticateRequest: func(req AuthRequest) (*AuthResponse, error) { return &AuthResponse{}, nil },
+		},
+		state: &State{AuthFailed: true},
+	}
+
+	res := (&Payload{OpCode: OpFailure}).Handle(ctx)
+
+	assert.Nil(t, res, "standalone failure-ack returns no payload (bare EAP-Failure)")
+	assert.Equal(t, protocol.StatusError, ctx.endStatus)
+}
+
+func TestDecodeAcceptsFailureResponse(t *testing.T) {
+	p := &Payload{}
+	require.NoError(t, p.Decode([]byte{byte(OpFailure)}))
+	assert.Equal(t, OpFailure, p.OpCode)
+
+	require.Error(t, (&Payload{}).Decode([]byte{byte(OpFailure), 0x00}))
+}
+
+// OnResult must report the password verdict so a consumer can audit access/reject:
+// true on a matching NT-Response, false on a mismatch.
+func TestHandleInvokesOnResult(t *testing.T) {
+	t.Run("match reports success", func(t *testing.T) {
+		var got *bool
+		ctx := &testContext{
+			root: &eap.Payload{ID: 7},
+			settings: Settings{
+				AuthenticateRequest: func(req AuthRequest) (*AuthResponse, error) {
+					return &AuthResponse{NTResponse: make([]byte, responseNTResponseSize), AuthenticatorResponse: "S=ok"}, nil
+				},
+				OnResult: func(_ protocol.Context, success bool) { got = &success },
+			},
+			state: &State{Challenge: make([]byte, challengeValueSize)},
+		}
+
+		value := make([]byte, responseValueSize) // peer NT-Response all-zero → matches
+		(&Payload{OpCode: OpResponse, Response: value}).Handle(ctx)
+
+		require.NotNil(t, got, "OnResult must be invoked")
+		assert.True(t, *got)
+	})
+
+	t.Run("mismatch reports failure", func(t *testing.T) {
+		var got *bool
+		ctx := &testContext{
+			root: &eap.Payload{ID: 7},
+			settings: Settings{
+				AuthenticateRequest: func(req AuthRequest) (*AuthResponse, error) {
+					return &AuthResponse{NTResponse: make([]byte, responseNTResponseSize)}, nil
+				},
+				OnResult: func(_ protocol.Context, success bool) { got = &success },
+			},
+			state: &State{Challenge: make([]byte, challengeValueSize)},
+		}
+
+		value := make([]byte, responseValueSize)
+		for i := 0; i < responseNTResponseSize; i++ {
+			value[challengeValueSize+responseReservedSize+i] = 0xFF // non-zero NT-Response
+		}
+		(&Payload{OpCode: OpResponse, Response: value}).Handle(ctx)
+
+		require.NotNil(t, got, "OnResult must be invoked")
+		assert.False(t, *got)
+	})
+}
+
 func TestModifyRADIUSResponseAddsMSMPPEKeys(t *testing.T) {
 	req := radius.New(radius.CodeAccessRequest, []byte("secret"))
 	res := radius.New(radius.CodeAccessAccept, []byte("secret"))
