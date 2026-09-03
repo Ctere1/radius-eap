@@ -575,7 +575,7 @@ func TestModifyRADIUSResponseAddsMPPEKeysWithoutLegacyAttributesByDefault(t *tes
 	require.NoError(t, payload.ModifyRADIUSResponse(res, req))
 
 	assert.Equal(t, keyMaterial[:32], microsoft.MSMPPERecvKey_Get(res, req))
-	assert.Equal(t, keyMaterial[64:96], microsoft.MSMPPESendKey_Get(res, req))
+	assert.Equal(t, keyMaterial[32:64], microsoft.MSMPPESendKey_Get(res, req), "RFC 5216 §2.3: Enc-SEND-Key = MSK(32,63)")
 	assert.Equal(t, microsoft.MSMPPEEncryptionPolicy(0), microsoft.MSMPPEEncryptionPolicy_Get(res))
 	assert.Equal(t, microsoft.MSMPPEEncryptionTypes(0), microsoft.MSMPPEEncryptionTypes_Get(res))
 }
@@ -673,4 +673,29 @@ func generateLeafCertificate(t *testing.T, caPEM, caKeyPEM []byte, caCert *x509.
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	require.NoError(t, err)
 	return cert
+}
+
+// TestModifyRADIUSResponseRejectsShortKeyingMaterial guards the MPPE key split:
+// both keys come out of the first 64 octets of the exported material, so a
+// shorter export must be reported rather than sliced out of bounds.
+func TestModifyRADIUSResponseRejectsShortKeyingMaterial(t *testing.T) {
+	req := radius.New(radius.CodeAccessRequest, []byte("secret"))
+	res := radius.New(radius.CodeAccessAccept, []byte("secret"))
+	res.Authenticator = req.Authenticator
+
+	payload := &Payload{
+		st: &State{
+			MPPEKey: make([]byte, 63),
+			HandshakeCtx: testContext{
+				log:    eap.DefaultLogger(),
+				modify: func(r, q *radius.Packet) error { return nil },
+			},
+			Logger: eap.DefaultLogger(),
+		},
+	}
+	payload.st.SetHandshakeDone(true)
+
+	require.Error(t, payload.ModifyRADIUSResponse(res, req))
+	require.Empty(t, microsoft.MSMPPERecvKey_Get(res, req))
+	require.Empty(t, microsoft.MSMPPESendKey_Get(res, req))
 }

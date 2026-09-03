@@ -112,3 +112,23 @@ func TestInboundReassemblerResetsBetweenMessages(t *testing.T) {
 	assert.False(t, needMore)
 	assert.Equal(t, []byte{9}, second)
 }
+
+func TestInboundReassemblerRejectsChangedDeclaredLength(t *testing.T) {
+	var r inboundReassembler
+	_, needMore, err := r.accept(FlagLengthIncluded|FlagMoreFragments, 6, []byte{1, 2, 3}, 0)
+	require.NoError(t, err)
+	require.True(t, needMore)
+
+	_, _, err = r.accept(FlagLengthIncluded, 9, []byte{4, 5, 6}, 0)
+	require.Error(t, err)
+}
+
+func TestInboundReassemblerRejectsSizeMismatchWithDeclaredLength(t *testing.T) {
+	var r inboundReassembler
+	_, needMore, err := r.accept(FlagLengthIncluded|FlagMoreFragments, 4, []byte{1, 2, 3}, 0)
+	require.NoError(t, err)
+	require.True(t, needMore)
+
+	_, _, err = r.accept(FlagNone, 0, []byte{4, 5, 6}, 0)
+	require.Error(t, err, "more octets than declared must not be handed to TLS as a complete flight")
+}

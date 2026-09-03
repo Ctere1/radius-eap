@@ -12,6 +12,15 @@ type StateManager interface {
 	SetEAPState(string, *State)
 }
 
+// SessionLimiter is optionally implemented by a StateManager that bounds the
+// number of live sessions. When AcceptNewSession returns false a request that
+// would start a new EAP conversation is answered with Access-Reject instead of
+// minting another session, so an unauthenticated flood cannot grow the store
+// without bound.
+type SessionLimiter interface {
+	AcceptNewSession() bool
+}
+
 type ProtocolConstructor func() Payload
 
 type Settings struct {
@@ -25,6 +34,11 @@ type State struct {
 	Protocols        []ProtocolConstructor
 	ProtocolIndex    int
 	ProtocolPriority []Type
+	// LastRequestID is the Identifier of the outstanding EAP Request and
+	// OutstandingRequest reports whether one exists. A peer Response whose
+	// Identifier does not match is silently discarded (RFC 3748 Section 4.1).
+	LastRequestID      uint8
+	OutstandingRequest bool
 	// TypeState holds each method's per-session state. It is shared by every
 	// protocol handled under the same RADIUS State and is accessed both by the
 	// request handler and by the background TLS handshake goroutine (via the

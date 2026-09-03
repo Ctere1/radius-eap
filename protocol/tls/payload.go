@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"time"
 
@@ -123,7 +122,9 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 		if !p.tlsInit(ctx) {
 			return nil
 		}
-		p.feedAndWait(flight)
+		if p.feedAndWait(flight) == WaitNeedInput {
+			return p.failIncompleteFlight(ctx)
+		}
 	} else if len(p.Data) > 0 {
 		ctx.Log().Debug("TLS: Updating buffer with new TLS data from packet")
 		flight, needMore, err := p.st.reassembler.accept(p.Flags, p.Length, p.Data, maxTLSMessageSize(ctx))
@@ -134,7 +135,9 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 			// Acknowledge the partial fragment and wait for the rest.
 			return ackPayload()
 		}
-		p.feedAndWait(flight)
+		if p.feedAndWait(flight) == WaitNeedInput {
+			return p.failIncompleteFlight(ctx)
+		}
 	}
 
 	if p.st.HasMore() {
@@ -178,12 +181,32 @@ func ackPayload() *Payload {
 
 // feedAndWait delivers a complete peer flight to the TLS goroutine and, while
 // the handshake is still in progress, waits (without polling) until that
-// goroutine has produced its response flight or reached a terminal state.
-func (p *Payload) feedAndWait(flight []byte) {
+// goroutine has produced its response flight or reached a terminal state. It
+// reports the outcome so the caller can stop rather than wait a second time for
+// something that is not coming.
+func (p *Payload) feedAndWait(flight []byte) WaitOutcome {
 	p.st.Conn.FeedFlight(flight)
-	if !p.st.HandshakeDoneValue() {
-		p.st.Conn.WaitOutbound(p.st.HandshakeDoneCh, p.st.HandshakeErrCh)
+	if p.st.HandshakeDoneValue() {
+		return WaitHandshakeDone
 	}
+	return p.st.Conn.WaitOutbound(p.st.HandshakeDoneCh, p.st.HandshakeErrCh)
+}
+
+// failIncompleteFlight ends the exchange for a peer flight the TLS state machine
+// could not finish reading. Waiting further would only park this handler until
+// the stale-connection timeout, and there is no outbound data to answer with.
+func (p *Payload) failIncompleteFlight(ctx protocol.Context) protocol.Payload {
+	ctx.Log().Warn(
+		"TLS: peer flight ended with the handshake still needing more input; ending as error",
+		"inbound_len", p.st.Conn.InboundLen(),
+	)
+	p.st.SetFinalStatus(protocol.StatusError)
+	if p.st.ContextCancel != nil {
+		p.st.ContextCancel()
+	}
+	p.st.signalHandshakeError()
+	ctx.EndInnerProtocol(protocol.StatusError)
+	return nil
 }
 
 // failReassembly aborts the exchange when a peer message violates the configured
@@ -278,6 +301,9 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 		return nil
 	}
 	p.st.Logger.Debug("TLS: Adding MPPE Keys")
+	if len(p.st.MPPEKey) < 64 {
+		return fmt.Errorf("TLS: keying material too short for MPPE keys: %d", len(p.st.MPPEKey))
+	}
 	// TLS overrides other protocols' MPPE keys.
 	if len(microsoft.MSMPPERecvKey_Get(r, q)) > 0 {
 		microsoft.MSMPPERecvKey_Del(r)
@@ -289,7 +315,7 @@ func (p *Payload) ModifyRADIUSResponse(r *radius.Packet, q *radius.Packet) error
 	if err != nil {
 		return err
 	}
-	err = microsoft.MSMPPESendKey_Set(r, p.st.MPPEKey[64:64+32])
+	err = microsoft.MSMPPESendKey_Set(r, p.st.MPPEKey[32:64])
 	if err != nil {
 		return err
 	}
@@ -312,13 +338,8 @@ func (p *Payload) tlsInit(ctx protocol.Context) bool {
 	settings, _ := ctx.ProtocolSettings().(Settings)
 	applyContextTLSHooks(cfg, ctx, settings)
 
-	if klp, ok := os.LookupEnv("SSLKEYLOGFILE"); ok {
-		kl, err := os.OpenFile(klp, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
-		if err != nil {
-			ctx.Log().Warn("TLS: failed to open SSLKEYLOGFILE", "path", klp, "error", err)
-		} else {
-			cfg.KeyLogWriter = kl
-		}
+	if settings.KeyLogWriter != nil {
+		cfg.KeyLogWriter = settings.KeyLogWriter
 	}
 
 	cfg.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
@@ -347,7 +368,9 @@ func (p *Payload) tlsInit(ctx protocol.Context) bool {
 }
 
 func (p *Payload) outboundPayload(ctx protocol.Context) protocol.Payload {
-	p.st.Conn.WaitOutbound(p.st.HandshakeDoneCh, p.st.HandshakeErrCh)
+	if p.st.Conn.WaitOutbound(p.st.HandshakeDoneCh, p.st.HandshakeErrCh) == WaitNeedInput {
+		return p.failIncompleteFlight(ctx)
+	}
 	if p.st.FinalStatusValue() == protocol.StatusError && !p.st.HandshakeDoneValue() {
 		ctx.EndInnerProtocol(protocol.StatusError)
 		return nil

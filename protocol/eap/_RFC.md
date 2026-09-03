@@ -34,7 +34,7 @@ packet decoded here.
 |------|----------------|
 | `payload.go` | `Payload` is the decoded EAP packet. `Decode` validates the Length (`4 <= Length <= received`; a larger Length is discarded, and trailing octets beyond Length are link-layer padding that is ignored — RFC 3748 Section 4) and, for Request/Response, resolves the method `Payload` via `EmptyPayload` and recurses into it. Success/Failure carry no Type and skip method resolution. `Encode` re-serializes and back-fills `Length`. |
 | `decode.go` | `EmptyPayload` performs **method type negotiation**: it scans the configured constructors for one whose `Type()` matches the offered type. For a tunneling method that wraps an inner payload (e.g. PEAP — a `tls.Payload` whose `HasInner()` is the PEAP payload), it returns the outer payload together with the **inner** Type code that must appear on the wire. |
-| `state.go` | `State.PacketID` tracks the EAP Identifier across a method exchange. |
+| `state.go` | Reserved per-method state for the root EAP layer. The outstanding Request Identifier lives on `protocol.State.LastRequestID` and is checked in `handler.go` (RFC 3748 Section 4.1). |
 
 ## Method type codes (IANA / RFC 3748 Section 5)
 

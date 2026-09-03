@@ -296,3 +296,33 @@ func TestWaitOutboundIgnoresTransientReadPark(t *testing.T) {
 		t.Fatal("Read did not complete after FeedFlight")
 	}
 }
+
+// A peer flight that leaves TLS parked for more input with nothing to send is an
+// incomplete flight: WaitOutbound must give up after the stall grace instead of
+// pinning the handler until the stale-connection timeout.
+func TestWaitOutboundReportsStalledReadAfterGrace(t *testing.T) {
+	previousGrace := readStallGrace
+	readStallGrace = 50 * time.Millisecond
+	t.Cleanup(func() { readStallGrace = previousGrace })
+
+	bc := NewBuffConn(context.Background(), testContext{log: eap.DefaultLogger()})
+
+	read := make(chan struct{})
+	go func() {
+		_, _ = bc.Read(make([]byte, 8))
+		close(read)
+	}()
+	require.Eventually(t, bc.ReadWaiting, time.Second, time.Millisecond)
+
+	started := time.Now()
+	outcome := bc.WaitOutbound(make(chan struct{}), make(chan struct{}))
+	assert.Equal(t, WaitNeedInput, outcome)
+	assert.GreaterOrEqual(t, time.Since(started), readStallGrace)
+
+	bc.FeedFlight([]byte{0x01})
+	select {
+	case <-read:
+	case <-time.After(time.Second):
+		t.Fatal("Read did not complete after FeedFlight")
+	}
+}

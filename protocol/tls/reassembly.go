@@ -19,6 +19,15 @@ type inboundReassembler struct {
 	buf      []byte // accumulated fragment bytes
 }
 
+// fail discards whatever has been accumulated and returns the error. Every
+// rejection resets, so a reassembler is never left holding a partial message
+// that a later fragment could be appended to.
+func (r *inboundReassembler) fail(format string, args ...any) error {
+	r.buf = nil
+	r.expected = 0
+	return fmt.Errorf(format, args...)
+}
+
 // accept consumes one inbound fragment. When the message is complete it returns
 // the full reassembled payload with needMore=false; otherwise it returns
 // needMore=true and the caller must acknowledge with an empty payload and wait
@@ -32,15 +41,17 @@ func (r *inboundReassembler) accept(flags Flag, length uint32, data []byte, max 
 
 	if flags&FlagLengthIncluded != 0 {
 		if length > uint32(max) {
-			return nil, false, fmt.Errorf("declared TLS message size %d exceeds maximum %d", length, max)
+			return nil, false, r.fail("declared TLS message size %d exceeds maximum %d", length, max)
 		}
 		if r.expected == 0 {
 			r.expected = int(length)
+		} else if int(length) != r.expected {
+			return nil, false, r.fail("declared TLS message size changed from %d to %d", r.expected, length)
 		}
 	}
 
 	if len(r.buf)+len(data) > max {
-		return nil, false, fmt.Errorf("reassembled TLS message size %d exceeds maximum %d", len(r.buf)+len(data), max)
+		return nil, false, r.fail("reassembled TLS message size %d exceeds maximum %d", len(r.buf)+len(data), max)
 	}
 	r.buf = append(r.buf, data...)
 
@@ -54,6 +65,9 @@ func (r *inboundReassembler) accept(flags Flag, length uint32, data []byte, max 
 		return nil, true, nil
 	}
 
+	if r.expected > 0 && len(r.buf) != r.expected {
+		return nil, false, r.fail("reassembled TLS message size %d does not match declared %d", len(r.buf), r.expected)
+	}
 	complete = r.buf
 	r.buf = nil
 	r.expected = 0

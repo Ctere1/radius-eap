@@ -42,7 +42,16 @@ func (fr *FailureRequest) Encode() ([]byte, error) {
 // failure as non-retryable; C carries a fresh 16-byte challenge in hex (required
 // by the format even when retries are disabled); V=3 is the MS-CHAP-V2 version.
 func formatFailureMessage(message string) string {
-	challenge := securecookie.GenerateRandomKey(challengeValueSize)
+	// Cosmetic only: this challenge is carried in the failure text with R=0
+	// (no retry), so an empty one cannot weaken anything.
+	challenge := randomChallenge()
 	return fmt.Sprintf("E=%d R=0 C=%s V=3 M=%s",
 		errAuthenticationFailure, hex.EncodeToString(challenge), message)
+}
+
+// randomChallenge returns a fresh 16-octet challenge, or nil when the CSPRNG is
+// unavailable. Callers that authenticate against it must fail the exchange
+// rather than continue with a predictable value (RFC 2759 Section 8).
+func randomChallenge() []byte {
+	return securecookie.GenerateRandomKey(challengeValueSize)
 }

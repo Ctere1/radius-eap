@@ -35,7 +35,7 @@ func TestEAP_PEAP_MSCHAPv2(t *testing.T) {
 						legacy_nak.Protocol,
 						mschapv2.Protocol,
 					},
-					ProtocolPriority: []protocol.Type{mschapv2.TypeMSCHAPv2},
+					ProtocolPriority: []protocol.Type{identity.TypeIdentity, mschapv2.TypeMSCHAPv2},
 					ProtocolSettings: map[protocol.Type]interface{}{
 						mschapv2.TypeMSCHAPv2: mschapv2.Settings{
 							AuthenticateRequest: mschapv2.DebugStaticCredentials(
@@ -79,7 +79,7 @@ func TestEAP_PEAP_MSCHAPv2_Reject(t *testing.T) {
 						legacy_nak.Protocol,
 						mschapv2.Protocol,
 					},
-					ProtocolPriority: []protocol.Type{mschapv2.TypeMSCHAPv2},
+					ProtocolPriority: []protocol.Type{identity.TypeIdentity, mschapv2.TypeMSCHAPv2},
 					ProtocolSettings: map[protocol.Type]interface{}{
 						mschapv2.TypeMSCHAPv2: mschapv2.Settings{
 							AuthenticateRequest: mschapv2.DebugStaticCredentials(

@@ -7,6 +7,7 @@ import (
 	"github.com/Ctere1/radius-eap/protocol"
 	eapprotocol "github.com/Ctere1/radius-eap/protocol/eap"
 	"github.com/Ctere1/radius-eap/protocol/identity"
+	"github.com/stretchr/testify/require"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2869"
@@ -299,4 +300,85 @@ func TestContextModifyRADIUSResponseExecutesAllRegisteredModifiers(t *testing.T)
 	if !slices.Equal(calls, []string{"root", "child"}) {
 		t.Fatalf("unexpected modifier call order: %v", calls)
 	}
+}
+
+// challengeSettings offers a single method that always re-challenges, so every
+// round produces an outstanding Request with a fresh Identifier.
+func challengeSettings() protocol.Settings {
+	return protocol.Settings{
+		Logger: DefaultLogger(),
+		Protocols: []protocol.ProtocolConstructor{
+			func() protocol.Payload { return &terminalPayload{status: protocol.StatusUnknown} },
+		},
+		ProtocolPriority: []protocol.Type{terminalProtocolType},
+	}
+}
+
+func handle(t *testing.T, stm protocol.StateManager, state string, raw []byte) *radius.Packet {
+	t.Helper()
+	req := &radius.Request{Packet: radius.New(radius.CodeAccessRequest, []byte("secret"))}
+	if state != "" {
+		require.NoError(t, rfc2865.State_SetString(req.Packet, state))
+	}
+	pkt, err := Decode(stm, raw)
+	require.NoError(t, err)
+	w := &recordingResponseWriter{}
+	pkt.HandleRadiusPacket(w, req)
+	return w.packet
+}
+
+// TestHandleRadiusPacket_DiscardsResponseWithUnexpectedIdentifier guards RFC 3748
+// Section 4.1: a Response whose Identifier does not match the outstanding Request
+// is silently discarded, while the matching one is processed.
+func TestHandleRadiusPacket_DiscardsResponseWithUnexpectedIdentifier(t *testing.T) {
+	stm := NewMemoryStateManager(challengeSettings(), 0)
+
+	first := handle(t, stm, "", rawEAP(protocol.CodeResponse, 1, terminalProtocolType, nil))
+	require.NotNil(t, first)
+	require.Equal(t, radius.CodeAccessChallenge, first.Code)
+	state := rfc2865.State_GetString(first)
+	outstanding := &eapprotocol.Payload{Settings: challengeSettings()}
+	require.NoError(t, outstanding.Decode(rfc2869.EAPMessage_Get(first)))
+	require.Equal(t, uint8(2), outstanding.ID)
+
+	stale := handle(t, stm, state, rawEAP(protocol.CodeResponse, 1, terminalProtocolType, nil))
+	require.Nil(t, stale, "a Response for an Identifier that is no longer outstanding must be discarded without a reply")
+
+	next := handle(t, stm, state, rawEAP(protocol.CodeResponse, outstanding.ID, terminalProtocolType, nil))
+	require.NotNil(t, next)
+	require.Equal(t, radius.CodeAccessChallenge, next.Code)
+}
+
+// TestHandleRadiusPacket_RejectsNewSessionWhenLimitReached guards the session
+// cap: a request that would mint another session is refused with Access-Reject
+// while an existing session keeps working.
+func TestHandleRadiusPacket_RejectsNewSessionWhenLimitReached(t *testing.T) {
+	stm := NewMemoryStateManager(challengeSettings(), 0)
+	stm.SetMaxSessions(1)
+
+	first := handle(t, stm, "", rawEAP(protocol.CodeResponse, 1, terminalProtocolType, nil))
+	require.Equal(t, radius.CodeAccessChallenge, first.Code)
+	state := rfc2865.State_GetString(first)
+
+	second := handle(t, stm, "", rawEAP(protocol.CodeResponse, 1, terminalProtocolType, nil))
+	require.NotNil(t, second)
+	require.Equal(t, radius.CodeAccessReject, second.Code)
+	require.Equal(t, 1, stm.Len())
+
+	continued := handle(t, stm, state, rawEAP(protocol.CodeResponse, 2, terminalProtocolType, nil))
+	require.Equal(t, radius.CodeAccessChallenge, continued.Code)
+}
+
+// TestHandleRadiusPacket_MessageAuthenticatorLeadsTheReply guards the
+// BlastRADIUS hardening: the Message-Authenticator is the first attribute of
+// every reply, ahead of State and EAP-Message.
+func TestHandleRadiusPacket_MessageAuthenticatorLeadsTheReply(t *testing.T) {
+	stm := NewMemoryStateManager(challengeSettings(), 0)
+
+	reply := handle(t, stm, "", rawEAP(protocol.CodeResponse, 1, terminalProtocolType, nil))
+	require.NotNil(t, reply)
+	require.NotEmpty(t, reply.Attributes)
+	require.Equal(t, rfc2869.MessageAuthenticator_Type, reply.Attributes[0].Type)
+	require.NotEmpty(t, rfc2865.State_GetString(reply))
+	require.NotEmpty(t, rfc2869.EAPMessage_Get(reply))
 }

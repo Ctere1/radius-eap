@@ -11,6 +11,14 @@ import (
 func (p *Payload) innerHandler(ctx protocol.Context) bool {
 	var d []byte
 	if !ctx.IsProtocolStart(p.Inner.Type()) {
+		if p.st.Conn.InboundLen() == 0 {
+			// Nothing was fed for this round, so a Read would only park the
+			// handler until the stale-connection timeout. A phase-2 packet with
+			// no tunnelled data is a protocol error.
+			ctx.Log().Warn("TLS: inner protocol packet carried no tunnelled data")
+			ctx.EndInnerProtocol(protocol.StatusError)
+			return false
+		}
 		ctx.Log().Debug("TLS: Reading from TLS for inner protocol")
 		var readErr error
 		d, readErr = readInnerTLSRecord(p.st.TLS)

@@ -18,6 +18,8 @@ import (
 type MemoryStateManager struct {
 	settings protocol.Settings
 	ttl      time.Duration
+	// maxSessions bounds the number of live sessions; 0 means unbounded.
+	maxSessions int
 
 	mu     sync.RWMutex
 	states map[string]*stateEntry
@@ -70,6 +72,27 @@ func (m *MemoryStateManager) SetEAPState(key string, state *protocol.State) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.states[key] = &stateEntry{state: state, lastSeen: time.Now()}
+}
+
+// SetMaxSessions bounds the number of live sessions. Once the bound is reached
+// AcceptNewSession reports false and the handler rejects requests that would
+// start another conversation; existing sessions continue. Zero removes the bound.
+//
+// The bound is soft: AcceptNewSession and the insert that follows it are not one
+// atomic step, so concurrent starts can overshoot by up to the number of
+// requests in flight. That is enough for its purpose, which is to stop unbounded
+// growth rather than to hold an exact number.
+func (m *MemoryStateManager) SetMaxSessions(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxSessions = n
+}
+
+// AcceptNewSession implements protocol.SessionLimiter.
+func (m *MemoryStateManager) AcceptNewSession() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.maxSessions <= 0 || len(m.states) < m.maxSessions
 }
 
 // Delete removes a session immediately, e.g. once authentication has resolved.

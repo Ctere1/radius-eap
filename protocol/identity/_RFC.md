@@ -12,7 +12,11 @@ informational only — it performs no authentication.
 
 | File | Responsibility |
 |------|----------------|
-| `payload.go` | `Payload.Identity` holds the peer's claimed identity. `Decode` reads the Type-Data as a UTF-8 string and rejects an empty value. `Encode` emits no Type-Data (the server's Identity *Request* has none). `Handle` stores the identity in `State` and ends the method with `StatusNextProtocol`, signalling the driver to offer the next (real) authentication method. |
+| `payload.go` | `Payload.Identity` holds the peer's claimed identity. `Decode` reads the Type-Data as a string, rejecting an empty value, one longer than a
+RADIUS User-Name can carry (253 octets) and one containing an embedded NUL. A
+single trailing NUL is trimmed rather than refused, because supplicants send one
+despite Section 5.1, and a non-UTF-8 identity is carried through because that
+section only RECOMMENDS UTF-8. `Encode` emits no Type-Data (the server's Identity *Request* has none). `Handle` stores the identity in `State` and ends the method with `StatusNextProtocol`, signalling the driver to offer the next (real) authentication method. |
 | `state.go` | `State.Identity` — the recorded identity, later read by inner methods (e.g. MS-CHAPv2 username lookup). |
 
 ## Notes

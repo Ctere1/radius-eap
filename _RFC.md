@@ -51,6 +51,26 @@ across RADIUS round-trips. `eap.NewMemoryStateManager(settings, ttl)`
 eviction — use it instead of re-implementing a map that never evicts abandoned
 sessions.
 
+## What the consumer must provide
+
+**RFC 5080 Section 2.2.2 duplicate detection is required of the RADIUS layer
+above this library.** `handler.go` answers a Response only while its Identifier
+is the one the outstanding Request carried (RFC 3748 Section 4.1); anything else
+is silently discarded. When a reply is lost the NAS retransmits the same
+Access-Request, carrying a Response this session has already answered and moved
+past — so the caller must replay the reply it cached for that request. Without
+such a cache the retransmission goes unanswered and the NAS retries to timeout.
+
+A caller also chooses whether to bound the session store
+(`MemoryStateManager.SetMaxSessions`, or its own `protocol.SessionLimiter`), and
+whether to validate the inbound Message-Authenticator (RFC 3579 Section 3.2);
+this library validates neither.
+
+**Tunnelled (PEAP phase 2) method sets should list `identity.TypeIdentity`
+first.** The inner identity exchange is only dispatched, and the protected
+identity only recorded, when the inner priority includes it; otherwise an inner
+method reads whatever the unprotected outer identity was.
+
 ## Reliability guarantees
 
 - **Race-free.** The EAP-TLS/PEAP handshake runs on a background goroutine while

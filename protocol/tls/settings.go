@@ -3,6 +3,7 @@ package tls
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 
 	"github.com/Ctere1/radius-eap/protocol"
 )
@@ -37,6 +38,13 @@ type Settings struct {
 	// flight). Zero selects the package default (64 KiB). It guards against a
 	// malicious peer declaring an enormous fragmented message (RFC 5216 Section 3.1).
 	MaxMessageSize int
+	// KeyLogWriter, when set, receives TLS session secrets in NSS key log format
+	// (tls.Config.KeyLogWriter) for sessions using THESE settings, i.e. outer
+	// EAP-TLS. A PEAP tunnel is configured through peap.Settings, so set
+	// peap.Settings.Config.KeyLogWriter for that one; the config is cloned per
+	// session, so the field is honoured there too. It is a debugging aid only:
+	// nothing is written unless the consumer opts in.
+	KeyLogWriter io.Writer
 }
 
 func (s Settings) TLSConfig() *tls.Config {

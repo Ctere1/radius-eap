@@ -107,7 +107,10 @@ func eapSettings(cert ttls.Certificate) protocol.Settings {
 						gtc.Protocol,
 						mschapv2.Protocol,
 					},
-					ProtocolPriority: []protocol.Type{mschapv2.TypeMSCHAPv2, gtc.TypeGTC},
+					// Identity leads so the tunnelled identity exchange is actually
+					// dispatched and recorded on the inner state; without it an
+					// inner method reads whatever the unprotected outer identity was.
+					ProtocolPriority: []protocol.Type{identity.TypeIdentity, mschapv2.TypeMSCHAPv2, gtc.TypeGTC},
 					ProtocolSettings: map[protocol.Type]interface{}{
 						mschapv2.TypeMSCHAPv2: mschapv2.Settings{
 							AuthenticateRequest: mschapv2.DebugStaticCredentials(

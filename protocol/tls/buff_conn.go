@@ -69,7 +69,22 @@ const (
 	WaitTimeout
 	// WaitClosed: the conn was closed.
 	WaitClosed
+	// WaitNeedInput: the TLS goroutine has consumed every inbound byte and is
+	// parked waiting for more, yet produced nothing to send. The peer's flight was
+	// incomplete, so there is nothing to wait for; the caller ends the exchange
+	// rather than pinning its goroutine until the stale-connection timeout.
+	WaitNeedInput
 )
+
+// readStallGrace is how long a parked Read with nothing buffered in either
+// direction may persist before WaitOutbound gives up on the flight. A genuine
+// mid-flight park lasts microseconds; anything longer means the peer sent an
+// incomplete flight and waiting out the stale-connection timeout would only pin
+// the handler goroutine.
+//
+// A variable rather than a constant so tests can shorten it; production never
+// assigns it.
+var readStallGrace = 2 * time.Second
 
 // NewBuffConn creates an empty conn. Peer data (including the first ClientHello
 // flight) is delivered exclusively through FeedFlight so there is a single
@@ -185,20 +200,49 @@ func (c *BuffConn) WaitOutbound(done, errc <-chan struct{}) WaitOutcome {
 		// bytes (above), handshake completion (done), an error, or the stale
 		// connection timeout (ctx); block until one of those occurs.
 		wait := c.notify
+		var stall <-chan time.Time
+		var timer *time.Timer
+		if c.readWaiting && len(c.inbound) == 0 {
+			timer = time.NewTimer(readStallGrace)
+			stall = timer.C
+		}
 		c.mu.Unlock()
 
-		select {
-		case <-wait:
-			c.mu.Lock()
-		case <-done:
-			return WaitHandshakeDone
-		case <-errc:
-			return WaitError
-		case <-c.ctx.Done():
-			return WaitTimeout
-		case <-c.closed:
-			return WaitClosed
+		outcome, decided := c.awaitOnce(wait, stall, done, errc)
+		if timer != nil {
+			timer.Stop()
 		}
+		if decided {
+			return outcome
+		}
+		c.mu.Lock()
+	}
+}
+
+// awaitOnce blocks on one round of the WaitOutbound select. decided reports
+// whether the outcome is final; otherwise the caller re-checks under the lock.
+// It is split out so each iteration's stall timer is released as soon as that
+// iteration ends rather than accumulating for the whole call.
+func (c *BuffConn) awaitOnce(wait <-chan struct{}, stall <-chan time.Time, done, errc <-chan struct{}) (WaitOutcome, bool) {
+	select {
+	case <-wait:
+		return WaitFlightBoundary, false
+	case <-stall:
+		c.mu.Lock()
+		stalled := c.readWaiting && len(c.inbound) == 0 && len(c.outbound) == 0
+		c.mu.Unlock()
+		if stalled {
+			return WaitNeedInput, true
+		}
+		return WaitFlightBoundary, false
+	case <-done:
+		return WaitHandshakeDone, true
+	case <-errc:
+		return WaitError, true
+	case <-c.ctx.Done():
+		return WaitTimeout, true
+	case <-c.closed:
+		return WaitClosed, true
 	}
 }
 

@@ -18,6 +18,11 @@ import (
 
 func (p *Packet) sendErrorResponse(w radius.ResponseWriter, r *radius.Request) {
 	rres := r.Response(radius.CodeAccessReject)
+	// Every response to an Access-Request carries one, this one included
+	// (draft-ietf-radext-deprecating-radius Section 4.5).
+	if err := p.setMessageAuthenticator(rres); err != nil {
+		p.stm.GetEAPSettings().Logger.Warn("failed to set message authenticator on error response", "error", err)
+	}
 	err := w.Write(rres)
 	if err != nil {
 		p.stm.GetEAPSettings().Logger.Error("failed to send response", "error", err)
@@ -35,10 +40,45 @@ func (p *Packet) HandleRadiusPacket(w radius.ResponseWriter, r *radius.Request) 
 	l := p.stm.GetEAPSettings().Logger
 	p.r = r
 	p.state = selectRequestState(r, p.stm)
+	if p.state == "" {
+		l.Error("failed to mint a session State; refusing the request")
+		p.sendErrorResponse(w, r)
+		return
+	}
+
+	existing := p.stm.GetEAPState(p.state)
+	if existing == nil {
+		if limiter, ok := p.stm.(protocol.SessionLimiter); ok && !limiter.AcceptNewSession() {
+			l.Warn("Root-EAP: session limit reached; rejecting new EAP conversation")
+			p.sendErrorResponse(w, r)
+			return
+		}
+	} else if existing.OutstandingRequest && p.eap.ID != existing.LastRequestID {
+		// RFC 3748 Section 4.1: a Response whose Identifier does not match the
+		// outstanding Request MUST be silently discarded.
+		//
+		// CONSUMER REQUIREMENT: this makes RFC 5080 Section 2.2.2 duplicate
+		// detection mandatory in the RADIUS layer above. When a reply is lost the
+		// NAS retransmits the same Access-Request, carrying the Response this
+		// session has already answered and moved past; the caller must replay the
+		// cached reply for it, because reaching here it can only be dropped. A
+		// caller without that cache will stall such a session instead of
+		// recovering it.
+		l.Debug("Root-EAP: discarding Response with unexpected Identifier", "got", p.eap.ID, "want", existing.LastRequestID)
+		return
+	}
 
 	rep, err := p.handleEAP(p.eap, p.stm, nil)
+	if st := p.stm.GetEAPState(p.state); st != nil {
+		st.LastRequestID = rep.ID
+		st.OutstandingRequest = rep.Code == protocol.CodeRequest
+	}
 
 	rres := r.Response(radius.CodeAccessReject)
+	// Reserve the first attribute slot: setMessageAuthenticator replaces this
+	// placeholder in place, so the Message-Authenticator leads the reply as
+	// draft-ietf-radext-deprecating-radius Section 4.5 requires.
+	_ = rfc2869.MessageAuthenticator_Set(rres, make([]byte, 16))
 	if err == nil {
 		rres.Code = radiusCodeForEAP(rep.Code)
 	} else {
@@ -110,7 +150,15 @@ func selectRequestState(r *radius.Request, stm protocol.StateManager) string {
 			return rst
 		}
 	}
-	return base64.StdEncoding.EncodeToString(securecookie.GenerateRandomKey(12))
+	key := securecookie.GenerateRandomKey(12)
+	if key == nil {
+		// The CSPRNG is unavailable. Returning "" rather than panicking keeps a
+		// request-path failure to one request: the caller answers Access-Reject,
+		// where a panic would take the whole server down (the RADIUS package runs
+		// handlers in goroutines with no recover).
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(key)
 }
 
 // handleEAP is the recursive EAP method state machine. It validates the inbound
@@ -150,7 +198,7 @@ func (p *Packet) handleEAP(pp protocol.Payload, stm protocol.StateManager, paren
 	next := func() (*eap.Payload, error) {
 		st.ProtocolIndex += 1
 		stm.SetEAPState(p.state, st)
-		return p.handleEAP(pp, stm, nil)
+		return p.handleEAP(pp, stm, parentContext)
 	}
 
 	if n, ok := incoming.Payload.(*legacy_nak.Payload); ok {
@@ -221,6 +269,7 @@ func (p *Packet) buildContext(parentContext *context, np protocol.Payload, t pro
 	if parentContext != nil {
 		ctx := parentContext.Inner(np, t).(*context)
 		ctx.settings = stm.GetEAPSettings().ProtocolSettings[np.Type()]
+		ctx.methodState = st
 		return ctx
 	}
 	ctx := &context{

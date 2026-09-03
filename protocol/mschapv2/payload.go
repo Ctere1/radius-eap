@@ -9,7 +9,6 @@ import (
 	"github.com/Ctere1/radius-eap/protocol"
 	"github.com/Ctere1/radius-eap/protocol/eap"
 	"github.com/Ctere1/radius-eap/protocol/peap"
-	"github.com/gorilla/securecookie"
 	"layeh.com/radius"
 	"layeh.com/radius/vendors/microsoft"
 )
@@ -19,6 +18,11 @@ const TypeMSCHAPv2 protocol.Type = 26
 func Protocol() protocol.Payload {
 	return &Payload{}
 }
+
+// maxNameLength bounds the peer Name field of a Response packet. It is not used
+// for authentication (the RADIUS User-Name / inner identity is), so it only
+// needs to be large enough for any real account name.
+const maxNameLength = 256
 
 const (
 	challengeValueSize     = 16
@@ -87,6 +91,9 @@ func (p *Payload) Decode(raw []byte) error {
 	}
 	p.Response = raw[5 : p.ValueSize+5]
 	p.Name = raw[5+p.ValueSize:]
+	if len(p.Name) > maxNameLength {
+		return fmt.Errorf("MSCHAPv2: Name too long: %d octets", len(p.Name))
+	}
 	return nil
 }
 
@@ -125,8 +132,16 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 
 	if ctx.IsProtocolStart(TypeMSCHAPv2) {
 		ctx.Log().Debug("MSCHAPv2: Empty state, starting")
+		challenge := randomChallenge()
+		if challenge == nil {
+			// A predictable authenticator challenge breaks the RFC 2759 Section 8
+			// security model, so the exchange ends instead.
+			ctx.Log().Error("MSCHAPv2: no randomness available for the authenticator challenge")
+			ctx.EndInnerProtocol(protocol.StatusError)
+			return nil
+		}
 		p.st = &State{
-			Challenge: securecookie.GenerateRandomKey(challengeValueSize),
+			Challenge: challenge,
 		}
 		return &Payload{
 			OpCode:     OpChallenge,

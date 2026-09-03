@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -21,10 +22,31 @@ func (p *Payload) Type() protocol.Type {
 	return TypeIdentity
 }
 
+// maxIdentityLength bounds the Type-Data of an Identity Response. RFC 3748 sets
+// no limit, but the identity is carried on as the RADIUS User-Name, whose
+// attribute value is at most 253 octets.
+const maxIdentityLength = 253
+
 func (p *Payload) Decode(raw []byte) error {
 	if len(raw) == 0 {
 		return errors.New("identity payload cannot be empty")
 	}
+	if len(raw) > maxIdentityLength {
+		return fmt.Errorf("identity payload too long: %d octets", len(raw))
+	}
+	// RFC 3748 Section 5.1: the Identity Response MUST NOT be null terminated.
+	// Supplicants send one anyway, so a single trailing NUL is trimmed rather
+	// than rejected; an embedded one is refused because the value goes on to be
+	// a RADIUS User-Name.
+	raw = bytes.TrimSuffix(raw, []byte{0})
+	if len(raw) == 0 {
+		return errors.New("identity payload cannot be empty")
+	}
+	if bytes.IndexByte(raw, 0) >= 0 {
+		return errors.New("identity payload contains a NUL octet")
+	}
+	// Section 5.1 only RECOMMENDS UTF-8, so a legacy eight-bit identity is
+	// carried through rather than refused.
 	p.Identity = string(raw)
 	return nil
 }

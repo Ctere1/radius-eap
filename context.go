@@ -13,6 +13,11 @@ type context struct {
 	rootPayload protocol.Payload
 	state       string
 	session     *protocol.State
+	// methodState, when set, is the nested StateManager's own State for a
+	// tunnelled (PEAP phase 2) method. Per-method state then lives there instead
+	// of on the outer session, so an inner Identity is recorded separately from
+	// the unprotected outer one. SessionData stays shared through session.
+	methodState *protocol.State
 	log         protocol.Logger
 	settings    interface{}
 	parent      *context
@@ -28,23 +33,28 @@ func (ctx *context) RootPayload() protocol.Payload { return ctx.rootPayload }
 func (ctx *context) Packet() *radius.Request       { return ctx.req }
 func (ctx *context) State() string                 { return ctx.state }
 func (ctx *context) ProtocolSettings() any         { return ctx.settings }
-func (ctx *context) GetProtocolState(p protocol.Type) any {
-	if ctx.session == nil {
-		return nil
+func (ctx *context) methodStore() *protocol.State {
+	if ctx.methodState != nil {
+		return ctx.methodState
 	}
-	return ctx.session.ProtocolState(p)
+	return ctx.session
+}
+func (ctx *context) GetProtocolState(p protocol.Type) any {
+	if store := ctx.methodStore(); store != nil {
+		return store.ProtocolState(p)
+	}
+	return nil
 }
 func (ctx *context) SetProtocolState(p protocol.Type, st any) {
-	if ctx.session == nil {
-		return
+	if store := ctx.methodStore(); store != nil {
+		store.SetProtocolState(p, st)
 	}
-	ctx.session.SetProtocolState(p, st)
 }
 func (ctx *context) IsProtocolStart(p protocol.Type) bool {
-	if ctx.session == nil {
-		return true
+	if store := ctx.methodStore(); store != nil {
+		return store.IsProtocolStart(p)
 	}
-	return ctx.session.IsProtocolStart(p)
+	return true
 }
 func (ctx *context) SessionValue(key string) any {
 	if ctx.session == nil {
@@ -99,7 +109,11 @@ func (ctx *context) Inner(p protocol.Payload, t protocol.Type) protocol.Context 
 }
 func (ctx *context) EndInnerProtocol(st protocol.Status) {
 	ctx.log.Debug("Ending protocol")
-	if ctx.parent != nil {
+	// Advancing to the next method is a decision for the state machine that
+	// dispatched this method (an inner Identity moves the tunnelled ladder on,
+	// not the outer one). Terminal statuses end the whole conversation and so
+	// propagate to the root.
+	if ctx.parent != nil && st != protocol.StatusNextProtocol {
 		ctx.parent.EndInnerProtocol(st)
 		return
 	}

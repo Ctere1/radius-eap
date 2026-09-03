@@ -88,8 +88,9 @@ material via TLS-Exporter:
 - **TLS 1.3**: label `"EXPORTER_EAP_TLS_Key_Material"` with context `[TypeTLS]`
   (RFC 9190).
 
-The first 32 octets become MS-MPPE-Recv-Key and octets 64..96 become
-MS-MPPE-Send-Key (`ModifyRADIUSResponse`). TLS 1.3 additionally sends the
+The first 64 octets are the MSK and the last 64 the EMSK (RFC 5216 Section 2.3).
+MSK octets 0..31 become MS-MPPE-Recv-Key and MSK octets 32..63 become
+MS-MPPE-Send-Key (`ModifyRADIUSResponse`); the EMSK is never exported. TLS 1.3 additionally sends the
 **protected success indication** (`0x00` application byte,
 `queueProtectedSuccessIndicator`) per RFC 9190.
 

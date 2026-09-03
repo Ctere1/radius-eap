@@ -5,6 +5,115 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (0.x: the minor
 version is bumped for features and breaking changes).
 
+## [0.5.0] - 2026-09-03
+
+Corrects the **MS-MPPE-Send-Key** derivation, which shipped half of the EMSK as a
+link key, and hardens the EAP state machine: Response Identifiers are now matched
+(RFC 3748 §4.1), the session store can be bounded, and tunnelled methods keep
+their own per-method state so the **protected inner identity** is finally
+recorded. Nothing is removed from the exported API, but three behaviours change
+in ways a consumer must account for — see **Migration**.
+
+### Fixed
+
+- **MS-MPPE-Send-Key was derived from the EMSK, not the MSK.** RFC 5216 §2.3
+  defines `Enc-SEND-Key = MSK(32,63)`, but the key was taken from
+  `Key_Material(64,95)` — the first 32 octets of the EMSK. 802.1X/WPA2 never
+  noticed, because the PMK comes from the Recv-Key, but PPP/MPPE links (PPTP,
+  L2TP) were keyed with a value the peer could not reproduce, and 32 octets of
+  EMSK were handed to the NAS, which the same section says must not be exported.
+  A length guard now rejects keying material shorter than 64 octets instead of
+  slicing out of bounds. (`protocol/tls`)
+- **PEAP ended in Access-Reject when the inner method set offered Identity, and
+  when the peer sent an inner Legacy Nak.** Advancing the tunnelled method ladder
+  ended the whole conversation, because `EndInnerProtocol(StatusNextProtocol)`
+  propagated to the root context and `next()` dropped the parent context. Both
+  now advance the ladder that dispatched the method. (`context.go`, `handler.go`)
+- **A peer flight the TLS state machine could not finish reading pinned the
+  request goroutine for the full 10 s stale-connection timeout.** It is now
+  resolved after a 2 s grace (`WaitNeedInput`), and a PEAP phase-2 packet
+  carrying no tunnelled data ends the exchange instead of blocking on a read.
+  (`protocol/tls`)
+- **The fragment reassembler accepted contradictory framing.** A later fragment
+  declaring a different total length, and a message whose reassembled size does
+  not match the declared length, are now errors; every rejection clears the
+  buffer so no partial message survives for a later fragment to extend.
+  (`protocol/tls`)
+
+### Security
+
+- **EAP Response Identifiers are matched (RFC 3748 §4.1).** A Response whose
+  Identifier is not the outstanding Request's is silently discarded instead of
+  re-entering the method state machine, where a replayed Access-Request could
+  feed the same TLS flight twice. **This makes RFC 5080 §2.2.2 duplicate
+  detection a requirement of the RADIUS layer above** — see Migration.
+  (`handler.go`, `protocol/state.go`)
+- **The session store can be bounded.** Eviction is TTL-driven, so without a cap
+  a burst of initial EAP packets — none of which has authenticated anything —
+  grows the store for a whole session lifetime. The bound is soft: the check and
+  the insert are not one atomic step, so concurrent starts may overshoot by the
+  number of requests in flight. (`memory_state.go`, `protocol/state.go`)
+- **`SSLKEYLOGFILE` is no longer honoured.** It was read unconditionally, so
+  anyone able to set an environment variable on the server process got every TLS
+  session secret written to disk, and the file handle was never closed (one
+  descriptor per session). Key logging is now opt-in through
+  `tls.Settings.KeyLogWriter`. (`protocol/tls`)
+- **The Message-Authenticator is the first attribute of every reply**, including
+  the error Access-Reject, which carried none at all
+  (draft-ietf-radext-deprecating-radius §4.5). (`handler.go`)
+- **Peer-supplied fields are bounded.** An Identity is limited to the 253 octets
+  a RADIUS User-Name can carry and refused if it contains an embedded NUL; the
+  MS-CHAPv2 `Name` field is limited to 256 octets. (`protocol/identity`,
+  `protocol/mschapv2`)
+- **No panics on the request path.** An unavailable CSPRNG now fails the one
+  request rather than the process — the RADIUS layer runs handlers in goroutines
+  with no recover. (`handler.go`, `protocol/mschapv2`)
+
+### Added
+
+- **`protocol.SessionLimiter`** and **`MemoryStateManager.SetMaxSessions`** —
+  once the bound is reached, requests that would start another conversation are
+  refused while existing ones continue.
+- **`tls.Settings.KeyLogWriter`** — opt-in NSS key logging for outer EAP-TLS. A
+  PEAP tunnel is configured through `peap.Settings`, so set
+  `peap.Settings.Config.KeyLogWriter` for that one.
+- **`State.LastRequestID` / `State.OutstandingRequest`** — the Identifier
+  bookkeeping behind the RFC 3748 §4.1 check.
+- **`WaitNeedInput`** — the `WaitOutbound` outcome reporting that the peer's
+  flight was incomplete, so a caller stops instead of waiting for something that
+  is not coming.
+
+### Changed
+
+- **Tunnelled (PEAP phase 2) methods keep per-method state on the nested state
+  manager's `State`**, not on the shared outer session. The protected inner
+  Identity is therefore recorded separately from the unprotected outer one, which
+  is what an inner method should authenticate. Session-scoped values
+  (`SessionValue` / `SetSessionValue`) stay shared. (`context.go`, `handler.go`)
+- **A non-UTF-8 Identity is carried through rather than refused**, and a single
+  trailing NUL is trimmed. RFC 3748 §5.1 only RECOMMENDS UTF-8, and supplicants
+  terminate the value despite the same section. (`protocol/identity`)
+- **Go 1.27 is now the minimum**, and `testify` moves to v1.12.1.
+
+### Migration
+
+- **Implement RFC 5080 §2.2.2 duplicate detection in the RADIUS layer.** With
+  Identifier matching in place, a retransmitted Access-Request carries a Response
+  this library has already answered and moved past, so it is discarded here; the
+  caller must replay the reply it cached for that request. Without such a cache
+  the retransmission goes unanswered and the NAS retries to timeout. The cache
+  should live long enough to cover the retransmission window the same document
+  recommends (30 s).
+- **Lead tunnelled method sets with `identity.TypeIdentity`.** The inner identity
+  exchange is only dispatched, and the protected identity only recorded, when the
+  inner `ProtocolPriority` includes it. A consumer reading
+  `ctx.GetProtocolState(identity.TypeIdentity)` from an inner method gets `nil`
+  until it does, where before it silently got the outer identity.
+- **Replace `SSLKEYLOGFILE` with `tls.Settings.KeyLogWriter`** if you relied on
+  key logging.
+- **Expect a different MS-MPPE-Send-Key value.** Deployments that key PPP/MPPE
+  links from it start working; 802.1X/WPA2 deployments are unaffected.
+
 ## [0.4.0] - 2026-06-22
 
 Adds a **standalone (outer) mode** to EAP-MS-CHAP-v2 so it can run directly as the

@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"strings"
 	"testing"
 
 	eaproot "github.com/Ctere1/radius-eap"
@@ -65,3 +66,23 @@ func (c *idTestContext) EndInnerProtocol(s protocol.Status)                     
 func (c *idTestContext) Log() protocol.Logger                                   { return eaproot.DefaultLogger() }
 func (c *idTestContext) SessionValue(string) any                                { return nil }
 func (c *idTestContext) SetSessionValue(string, any)                            {}
+
+// The identity is carried on as a RADIUS User-Name, so it is bounded to what
+// that attribute holds, and an embedded NUL is refused. RFC 3748 Section 5.1
+// says the Response MUST NOT be null terminated but supplicants terminate it
+// anyway, so a single trailing NUL is trimmed; the same section only RECOMMENDS
+// UTF-8, so a legacy eight-bit identity is carried through.
+func TestDecodeIdentityBoundsAndNulHandling(t *testing.T) {
+	p := &Payload{}
+
+	require.Error(t, p.Decode([]byte("al\x00ice")), "an embedded NUL must be refused")
+	require.Error(t, p.Decode([]byte{0}), "a lone NUL leaves nothing behind")
+	require.Error(t, p.Decode([]byte(strings.Repeat("a", 254))))
+
+	require.NoError(t, p.Decode([]byte(strings.Repeat("a", 253))))
+
+	require.NoError(t, p.Decode([]byte("alice\x00")))
+	require.Equal(t, "alice", p.Identity, "a trailing NUL is trimmed, not kept")
+
+	require.NoError(t, p.Decode([]byte{0xC3, 0x28}), "RFC 3748 only recommends UTF-8")
+}
