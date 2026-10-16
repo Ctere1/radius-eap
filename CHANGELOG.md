@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (0.x: the minor
 version is bumped for features and breaking changes).
 
+## [0.5.2] - 2026-10-16
+
+### Fixed
+
+- **PEAP over TLS 1.3 handed the NAS keys the peer did not share.** With TLS 1.3
+  the keying material was always exported for EAP-TLS's Type, 0x0D, also when
+  the TLS layer ran PEAP. RFC 9427 Section 2.1 exports it for the method's own
+  Type, `TLS-Exporter("EXPORTER_EAP_TLS_Key_Material", 0x19, 128)` for PEAP, as
+  the peer does, so authentication succeeded and the link keys derived from the
+  MS-MPPE keys did not match: a TLS 1.3 PEAP supplicant could not complete the
+  802.1X 4-way handshake. The exporter context is now the Type of the method
+  running TLS. EAP-TLS and every TLS 1.2 session are unchanged. (`protocol/tls`)
+
 ## [0.5.1] - 2026-10-16
 
 ### Fixed

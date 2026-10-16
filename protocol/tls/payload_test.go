@@ -334,6 +334,59 @@ func TestTLSHandshakeFinishedExportsKeysForTLS12AndTLS13(t *testing.T) {
 	}
 }
 
+// peapInnerPayload stands for the PEAP payload a tunnelled TLS layer carries.
+type peapInnerPayload struct{ nilInnerPayload }
+
+func (p *peapInnerPayload) Type() protocol.Type { return 25 }
+
+// With TLS 1.3 the keying material is exported for the EAP Type that runs TLS:
+// 0x0D for EAP-TLS (RFC 9190 Section 2.3) and 0x19 for PEAP (RFC 9427 Section
+// 2.1). The peer derives it the same way, so another context gives keys the
+// NAS and the peer do not share.
+func TestTLSHandshakeFinished_ExportsTLS13KeysForTheMethodRunningTLS(t *testing.T) {
+	tests := []struct {
+		name  string
+		inner protocol.Payload
+		eap   byte
+	}{
+		{"EAP-TLS", nil, 13},
+		{"PEAP", &peapInnerPayload{}, 25},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			serverConn, clientConn, _ := newRecordedMutualTLSPair(t, tls.VersionTLS13)
+			t.Cleanup(func() {
+				_ = serverConn.Close()
+				_ = clientConn.Close()
+			})
+			if tt.inner == nil {
+				// The outer method sends the RFC 9190 protected success indication.
+				go func() { _, _ = clientConn.Read(make([]byte, 1)) }()
+			}
+			p := &Payload{
+				Inner: tt.inner,
+				st:    &State{TLS: serverConn, HandshakeCtx: testContext{log: eap.DefaultLogger()}, ContextCancel: func() {}},
+			}
+			ctx := testContext{
+				log: eap.DefaultLogger(),
+				settings: Settings{
+					Config: &tls.Config{},
+					HandshakeSuccessful: func(protocol.Context, []*x509.Certificate) protocol.Status {
+						return protocol.StatusSuccess
+					},
+				},
+			}
+
+			p.tlsHandshakeFinished(ctx)
+
+			peer := clientConn.ConnectionState()
+			want, err := peer.ExportKeyingMaterial("EXPORTER_EAP_TLS_Key_Material", []byte{tt.eap}, 128)
+			require.NoError(t, err)
+			assert.Equal(t, want, p.st.MPPEKey)
+		})
+	}
+}
+
 func TestTLSHandshakeFinished_QueuesProtectedSuccessIndicatorForTLS13Outer(t *testing.T) {
 	serverConn, clientConn, recorder := newRecordedMutualTLSPair(t, tls.VersionTLS13)
 	t.Cleanup(func() {

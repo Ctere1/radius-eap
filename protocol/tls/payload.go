@@ -467,7 +467,7 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 	case tls.VersionTLS13:
 		ctx.Log().Debug("TLS: Version(1.3)", "ver", cs.Version)
 		label = "EXPORTER_EAP_TLS_Key_Material"
-		context = []byte{byte(TypeTLS)}
+		context = []byte{byte(p.methodType())}
 	}
 	ksm, err := cs.ExportKeyingMaterial(label, context, 64+64)
 	if err != nil {
@@ -522,6 +522,16 @@ func (p *Payload) tlsHandshakeFinished(ctx protocol.Context) {
 	// Publish completion last, after MPPE keys and final status are set, so a
 	// handler observing the closed channel always sees a consistent state.
 	p.st.signalHandshakeDone()
+}
+
+// methodType is the EAP Type that runs this TLS layer, the context TLS 1.3
+// keying material is exported for: the tunnelled method's, as PEAP's 0x19
+// (RFC 9427 Section 2.1), or EAP-TLS's 0x0D (RFC 9190 Section 2.3).
+func (p *Payload) methodType() protocol.Type {
+	if p.Inner != nil {
+		return p.Inner.Type()
+	}
+	return TypeTLS
 }
 
 func (p *Payload) queueProtectedSuccessIndicator(ctx protocol.Context, cs tls.ConnectionState) error {
