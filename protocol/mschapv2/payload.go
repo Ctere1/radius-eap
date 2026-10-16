@@ -205,7 +205,7 @@ func (p *Payload) Handle(ctx protocol.Context) protocol.Payload {
 			Payload: &Payload{
 				OpCode: OpSuccess,
 			},
-			Authenticator: []byte(auth.AuthenticatorResponse),
+			Authenticator: []byte(formatSuccessMessage(auth.AuthenticatorResponse, "Authentication succeeded")),
 		}
 		return succ
 	} else if p.OpCode == OpSuccess && p.st.AuthResponse != nil {

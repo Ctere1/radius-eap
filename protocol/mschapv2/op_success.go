@@ -21,3 +21,11 @@ func (sr *SuccessRequest) Encode() ([]byte, error) {
 	binary.BigEndian.PutUint16(encoded[2:], sr.MSLength)
 	return encoded, nil
 }
+
+// formatSuccessMessage builds the RFC 2759 Section 5 Success message: the
+// 42-octet authenticator response followed by a printable message, as
+// "S=<auth_string> M=<message>". A peer that parses the message by that
+// format refuses a Success without the M= part.
+func formatSuccessMessage(authenticatorResponse, message string) string {
+	return authenticatorResponse + " M=" + message
+}

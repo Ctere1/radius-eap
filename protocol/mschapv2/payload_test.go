@@ -148,6 +148,29 @@ func TestHandleStandaloneSuccessEndsWithEAPSuccess(t *testing.T) {
 	assert.Equal(t, protocol.StatusSuccess, ctx.endStatus)
 }
 
+// A matching NT-Response is answered with the Success-Request whose Message is
+// "S=<auth_string> M=<message>" (RFC 2759 Section 5): the authenticator response
+// the backend computed and a printable message.
+func TestHandleMatchSendsSuccessRequest(t *testing.T) {
+	authenticator := "S=0123456789ABCDEF0123456789ABCDEF01234567"
+	ctx := &testContext{
+		root: &eap.Payload{ID: 7},
+		settings: Settings{
+			AuthenticateRequest: func(req AuthRequest) (*AuthResponse, error) {
+				return &AuthResponse{NTResponse: make([]byte, responseNTResponseSize), AuthenticatorResponse: authenticator}, nil
+			},
+		},
+		state: &State{Challenge: make([]byte, challengeValueSize)},
+	}
+
+	value := make([]byte, responseValueSize) // peer NT-Response all-zero → matches
+	res := (&Payload{OpCode: OpResponse, Response: value}).Handle(ctx)
+
+	sr, ok := res.(*SuccessRequest)
+	require.True(t, ok, "a match returns a Success-Request")
+	assert.Equal(t, authenticator+" M=Authentication succeeded", string(sr.Authenticator))
+}
+
 // In standalone mode a wrong password must send the MS-CHAP-V2 Failure-Request
 // (E=691, RFC 2759 §6) and wait for the peer's ack — it must not end yet.
 func TestHandleStandaloneFailureSendsFailureRequest(t *testing.T) {

@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (0.x: the minor
 version is bumped for features and breaking changes).
 
+## [0.5.1] - 2026-10-16
+
+### Fixed
+
+- **The MS-CHAPv2 Success-Request carried only the authenticator response.**
+  RFC 2759 Section 5 defines its Message as the 42-octet authenticator response
+  followed by a printable message, `S=<auth_string> M=<message>`, and a peer that
+  parses it by that format refused the success of a correct password. The library
+  now appends ` M=Authentication succeeded` to the `AuthenticatorResponse` the
+  backend returns, as the Failure-Request already carries `M=Authentication
+  failed`. Backends keep returning the bare `S=` string. (`protocol/mschapv2`)
+
 ## [0.5.0] - 2026-09-03
 
 Corrects the **MS-MPPE-Send-Key** derivation, which shipped half of the EMSK as a
